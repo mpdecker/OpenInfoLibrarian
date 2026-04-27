@@ -1,0 +1,10 @@
+# Sample DOI list — one DOI per line.
+# Lines starting with `#` are ignored.
+# Use:  documentcrawler import dois.txt
+
+10.1038/nature14539
+10.48550/arXiv.1706.03762
+10.18653/v1/N19-1423
+10.1109/CVPR.2016.90
+10.1038/171737a0
+10.1038/s41586-020-2649-2

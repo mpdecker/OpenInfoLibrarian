@@ -1,0 +1,31 @@
+TY  - JOUR
+AU  - LeCun, Yann
+AU  - Bengio, Yoshua
+AU  - Hinton, Geoffrey
+TI  - Deep learning
+PY  - 2015
+JO  - Nature
+VL  - 521
+IS  - 7553
+SP  - 436
+EP  - 444
+DO  - 10.1038/nature14539
+ER  -
+
+TY  - CONF
+AU  - Vaswani, Ashish
+AU  - Shazeer, Noam
+AU  - Parmar, Niki
+TI  - Attention Is All You Need
+PY  - 2017
+DO  - 10.48550/arXiv.1706.03762
+ER  -
+
+TY  - JOUR
+AU  - Watson, J. D.
+AU  - Crick, F. H. C.
+TI  - Molecular structure of nucleic acids
+PY  - 1953
+JO  - Nature
+DO  - 10.1038/171737a0
+ER  -

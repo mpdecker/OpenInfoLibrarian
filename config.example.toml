@@ -1,0 +1,127 @@
+# documentcrawler configuration. Copy to config.toml and edit.
+
+[general]
+download_dir      = "./downloads"
+db_path           = "./crawler.db"
+filename_template = "{first_author_last}_{year}_{title_slug}.{ext}"
+# Optional first-letter sub-folder, e.g. "downloads/S/Smith_2020_my-paper.pdf"
+folder_template   = "{first_author_initial}"
+workers           = 4
+request_timeout_s = 30
+max_retries       = 3
+min_pdf_bytes     = 20480
+log_level         = "INFO"
+
+[fetcher]
+# Per-host rate limits in requests / second. Sensible defaults.
+default_rate          = 2.0
+"api.crossref.org"    = 50.0
+"api.openalex.org"    = 10.0
+"api.unpaywall.org"   = 10.0
+"export.arxiv.org"    = 1.0
+"eutils.ncbi.nlm.nih.gov" = 3.0
+"sci-hub.se"          = 1.0
+"sci-hub.ru"          = 1.0
+"sci-hub.st"          = 1.0
+"annas-archive.org"   = 1.0
+"annas-archive.gl"    = 1.0
+"annas-archive.se"    = 1.0
+"libgen.is"           = 1.0
+"libgen.rs"           = 1.0
+"libgen.li"           = 1.0
+"libgen.gs"           = 1.0
+"api.semanticscholar.org" = 0.5
+"z-lib.fm"            = 1.0
+"z-library.sk"        = 1.0
+"1lib.sk"             = 1.0
+"z-lib.io"            = 1.0
+"z-lib.gs"            = 1.0
+
+[fetcher.user_agents]
+list = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+]
+
+[metadata.unpaywall]
+# Unpaywall requires a contact email. https://unpaywall.org/products/api
+email = "you@example.com"
+
+[metadata.crossref]
+# Optional: set a mailto for the polite Crossref pool.
+mailto = "you@example.com"
+
+[sources]
+# Sources are tried in this order for each document. Open-access sources run
+# first; shadow-library sources fall back when no OA copy exists. Toggle any
+# source via its `enabled` flag below, or via the GUI's Settings dialog.
+order = [
+    "open_access",
+    "arxiv",
+    "pubmed",
+    "doaj",
+    "scihub",
+    "annas_archive",
+    "libgen",
+    "zlibrary",
+]
+
+[sources.open_access]
+enabled = true
+
+[sources.arxiv]
+enabled = true
+
+[sources.pubmed]
+enabled = true
+
+[sources.doaj]
+enabled = true
+
+[sources.scihub]
+enabled = true
+mirrors = [
+    "https://sci-hub.se",
+    "https://sci-hub.ru",
+    "https://sci-hub.st",
+    "https://sci-hub.ee",
+]
+
+[sources.annas_archive]
+enabled = true
+# Mirrors are tried in order. `.org` is the canonical site but is often
+# DNS-blocked by ISPs; `.gl` and `.se` are the most reliable fall-backs.
+mirrors = [
+    "https://annas-archive.org",
+    "https://annas-archive.gl",
+    "https://annas-archive.se",
+    "https://annas-archive.li",
+]
+# Legacy single-mirror option (still respected if `mirrors` is empty).
+base_url = "https://annas-archive.org"
+
+[sources.libgen]
+enabled = true
+# libgen.li is the most reliably reachable mirror today; .is/.rs are kept
+# as fall-backs but are frequently unreachable. Order = priority.
+mirrors = [
+    "https://libgen.li",
+    "https://libgen.gs",
+    "https://libgen.is",
+    "https://libgen.rs",
+]
+
+[sources.zlibrary]
+enabled = true
+# Z-Library shuffles its public clear-net domains often. `z-lib.fm` is
+# the most reliably reachable today; the rest serve as fall-backs.  If
+# all of these get blocked from your network, install the [browser]
+# extra and the searcher will fall back to a Playwright render.
+mirrors = [
+    "https://z-lib.fm",
+    "https://z-library.sk",
+    "https://1lib.sk",
+    "https://z-lib.io",
+    "https://z-lib.gs",
+]
