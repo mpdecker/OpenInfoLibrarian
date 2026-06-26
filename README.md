@@ -28,11 +28,31 @@ Z-Library) are off by default and must be opted into via `config.toml`.
 ```bash
 git clone https://github.com/mpdecker/DogTheLibrarian.git
 cd documentcrawler
+```
+
+### CLI only (lightweight)
+
+```bash
 pip install -e .
-# optional: enable Playwright fallback for JS-heavy sources
-pip install -e .[browser]
+```
+
+### Full experience (CLI + desktop GUI + HTTP server + browser fallback)
+
+```bash
+pip install -e .[full]
 playwright install chromium
 ```
+
+| Extra      | What you get                                          |
+|------------|-------------------------------------------------------|
+| *(none)*   | CLI, tkinter desktop GUI                              |
+| `browser`  | Playwright fallback for JS-heavy sources              |
+| `serve`    | HTTP API (`documentcrawler serve`)                    |
+| `gui`      | CLI + Playwright                                      |
+| `full`     | Everything: CLI + GUI + HTTP server + Playwright       |
+
+> **Linux users**: the desktop GUI requires `python3-tk`. On Debian/Ubuntu:
+> `sudo apt install python3-tk`
 
 ## Quick start
 

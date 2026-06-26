@@ -1413,3 +1413,184 @@ def test_multi_searcher_limit_per_source():
     cr_run = [r for r in res.runs if r.source == "crossref"][0]
     # The searcher itself may internally limit, so just verify we got results
     assert len(cr_run.hits) >= 0
+
+
+# -----------------------------------------------------------------------------
+# Dedupe misidentification prevention
+# -----------------------------------------------------------------------------
+
+
+def test_dedupe_same_title_different_year_not_merged():
+    """Papers with same normalized title but different years must NOT merge."""
+    h1 = SearchHit(source="crossref", title="Deep Learning for NLP", year=2020)
+    h2 = SearchHit(source="arxiv", title="Deep Learning for NLP", year=2022)
+    assert h1.dedupe_key() != h2.dedupe_key()
+
+
+def test_dedupe_same_title_year_diff_author_creates_different_keys():
+    """Same title+year but different authors should get different keys via author fallback."""
+    # Without year, the key uses author surname
+    h1 = SearchHit(source="crossref", title="Quantum Computing Primer", authors=["Smith, John"])
+    h2 = SearchHit(source="arxiv", title="Quantum Computing Primer", authors=["Doe, Jane"])
+    k1 = h1.dedupe_key()
+    k2 = h2.dedupe_key()
+    assert k1 != k2, f"Keys should differ: {k1!r} vs {k2!r}"
+    assert "author:smith" in k1
+    assert "author:doe" in k2
+
+
+def test_dedupe_title_with_year_ignores_author():
+    """When year is present, author is NOT part of the key."""
+    h1 = SearchHit(source="crossref", title="Quantum Computing Primer", year=2023, authors=["Smith, John"])
+    h2 = SearchHit(source="arxiv", title="Quantum Computing Primer", year=2023, authors=["Doe, Jane"])
+    assert h1.dedupe_key() == h2.dedupe_key()
+
+
+def test_dedupe_doi_normalized_merge():
+    """DOIs with different formatting (prefix, case) must produce the same key."""
+    h1 = SearchHit(source="crossref", doi="https://doi.org/10.1234/Test")
+    h2 = SearchHit(source="openalex", doi="10.1234/test")
+    assert h1.dedupe_key() == h2.dedupe_key() == "doi:10.1234/test"
+
+
+def test_dedupe_different_doi_not_merged():
+    """Genuinely different DOIs must NOT merge."""
+    h1 = SearchHit(source="crossref", doi="10.1000/a")
+    h2 = SearchHit(source="openalex", doi="10.1000/b")
+    assert h1.dedupe_key() != h2.dedupe_key()
+
+
+def test_dedupe_stopword_title_merge():
+    """Titles differing only in stopwords must produce the same key."""
+    h1 = SearchHit(source="crossref", title="The Machine Learning Book", year=2021)
+    h2 = SearchHit(source="arxiv", title="Machine Learning Book", year=2021)
+    assert h1.dedupe_key() == h2.dedupe_key()
+
+
+def test_dedupe_punctuation_title_merge():
+    """Titles differing only in punctuation must produce the same key."""
+    h1 = SearchHit(source="crossref", title="Hello, World: An Introduction", year=2020)
+    h2 = SearchHit(source="arxiv", title="Hello World -- An Introduction", year=2020)
+    assert h1.dedupe_key() == h2.dedupe_key()
+
+
+def test_dedupe_different_isbn_not_merged():
+    """Different ISBNs must NOT merge."""
+    h1 = SearchHit(source="openlibrary", isbn="978-0-00-000000-1")
+    h2 = SearchHit(source="zlibrary", isbn="978-0-00-000000-2")
+    assert h1.dedupe_key() != h2.dedupe_key()
+
+
+def test_dedupe_isbn_normalization_merge():
+    """ISBNs with different formatting must produce the same key."""
+    h1 = SearchHit(source="openlibrary", isbn="978-0-00-000000-1")
+    h2 = SearchHit(source="zlibrary", isbn="9780000000001")
+    assert h1.dedupe_key() == h2.dedupe_key() == "isbn:9780000000001"
+
+
+def test_dedupe_title_only_without_author_fallback():
+    """Hits with only stopword titles (normalized to empty) fall back to id(self) → never match."""
+    h1 = SearchHit(source="x", title="The A An")
+    h2 = SearchHit(source="y", title="The A  An")
+    # Both normalize to empty string → id(self) fallback → always unique
+    assert h1.dedupe_key() != h2.dedupe_key()
+    assert h1.dedupe_key().startswith("id:")
+    assert h2.dedupe_key().startswith("id:")
+
+
+def test_non_null_field_count():
+    """Verify _non_null_field_count counts correctly."""
+    h = SearchHit(source="x")
+    assert h._non_null_field_count == 0
+    h.title = "T"
+    h.doi = "10.1/a"
+    h.year = 2020
+    h.authors = ["A"]
+    h.pdf_url = "https://x.pdf"
+    assert h._non_null_field_count == 5
+
+
+def test_multi_searcher_record_alt_captures_source_links():
+    """When merging duplicates, extra['duplicates'] must hold all source URLs."""
+    cr_payload = {
+        "message": {
+            "items": [
+                {"DOI": "10.1234/dup", "title": ["Duplicate Paper"],
+                 "issued": {"date-parts": [[2023]]},
+                 "URL": "https://doi.org/10.1234/dup"}
+            ]
+        }
+    }
+    oa_payload = {
+        "results": [
+            {"title": "Duplicate Paper", "doi": "https://doi.org/10.1234/dup",
+             "publication_year": 2023,
+             "id": "https://openalex.org/W1"}
+        ]
+    }
+    fetcher = FakeFetcher(json_map={
+        "api.crossref.org": cr_payload,
+        "api.openalex.org": oa_payload,
+    })
+    ms = MultiSearcher(fetcher)
+    sq = SearchQuery(text="dup", sources=["crossref", "openalex"])
+    res = asyncio.run(ms.search(sq))
+    assert len(res.merged) == 1
+    dups = res.merged[0].extra.get("duplicates", [])
+    assert len(dups) == 2, f"Expected 2 entries (primary + alt), got {len(dups)}"
+    sources = {d["source"] for d in dups}
+    assert "crossref" in sources
+    assert "openalex" in sources
+    # Crossref entry should have its DOI URL
+    cr_entry = next(d for d in dups if d["source"] == "crossref")
+    assert cr_entry["url"] == "https://doi.org/10.1234/dup"
+
+
+def test_multi_searcher_streaming_vs_gather_parity():
+    """Streaming and gather paths must produce identical merged results."""
+    items = [
+        {"DOI": f"10.1234/{i}", "title": [f"Paper {i}"],
+         "issued": {"date-parts": [[2020 + i]]}} for i in range(5)
+    ]
+    payload = {"message": {"items": items}}
+    fetcher = FakeFetcher(json_map={"api.crossref.org": payload})
+
+    ms_stream = MultiSearcher(fetcher)
+    MultiSearcher.STREAMING = True
+    sq = SearchQuery(text="test", sources=["crossref"], limit_per_source=5)
+    res_stream = asyncio.run(ms_stream.search(sq))
+
+    MultiSearcher.STREAMING = False
+    fetcher2 = FakeFetcher(json_map={"api.crossref.org": payload})
+    ms_gather = MultiSearcher(fetcher2)
+    res_gather = asyncio.run(ms_gather.search(sq))
+
+    # Same number of merged results
+    assert len(res_stream.merged) == len(res_gather.merged) == 5
+    # Same DOI keys
+    stream_dois = sorted(h.doi for h in res_stream.merged)
+    gather_dois = sorted(h.doi for h in res_gather.merged)
+    assert stream_dois == gather_dois
+    # Same scores
+    stream_scores = [h.score for h in sorted(res_stream.merged, key=lambda x: x.doi or "")]
+    gather_scores = [h.score for h in sorted(res_gather.merged, key=lambda x: x.doi or "")]
+    assert stream_scores == gather_scores
+    # Restore default
+    MultiSearcher.STREAMING = True
+
+
+def test_dedupe_title_sort_order_deterministic():
+    """Word sorting in _normalize_title must be deterministic for the same input."""
+    h1 = SearchHit(source="a", title="Machine Learning Advanced", year=2022)
+    h2 = SearchHit(source="b", title="Advanced Machine Learning", year=2022)
+    assert h1.dedupe_key() == h2.dedupe_key()
+
+
+def test_dedupe_first_author_surname_extraction():
+    """_first_author_surname handles various formats."""
+    from documentcrawler.searcher.base import _first_author_surname
+    assert _first_author_surname(["Smith, John"]) == "smith"
+    assert _first_author_surname(["John Smith"]) == "smith"
+    assert _first_author_surname(["Jean-Luc Picard"]) == "picard"
+    assert _first_author_surname(["van der Waals, Johannes"]) == "van der waals"
+    assert _first_author_surname([]) == ""
