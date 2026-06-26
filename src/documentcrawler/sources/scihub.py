@@ -22,6 +22,8 @@ _DEFAULT_MIRRORS = [
     "https://sci-hub.ru",
     "https://sci-hub.st",
     "https://sci-hub.ee",
+    "https://sci-hub.wf",
+    "https://sci-hub.ren",
 ]
 
 
@@ -37,14 +39,20 @@ class SciHubSource(Source):
 
         for mirror in mirrors:
             mirror = mirror.rstrip("/")
+            html: str | None = None
             try:
                 html = await ctx.fetcher.get_text(f"{mirror}/{doi}")
             except FetchError as e:
-                log.debug("sci-hub mirror %s failed: %s", mirror, e)
-                continue
+                log.debug("sci-hub mirror %s http failed: %s", mirror, e)
             except Exception as e:
                 log.debug("sci-hub mirror %s error: %s", mirror, e)
-                continue
+
+            if html is None:
+                try:
+                    html = await ctx.fetcher.render(f"{mirror}/{doi}")
+                except Exception as e:
+                    log.debug("sci-hub mirror %s render failed: %s", mirror, e)
+                    continue
 
             pdf = _extract_pdf_url(html, mirror)
             if pdf:
@@ -73,10 +81,10 @@ def _extract_pdf_url(html: str, mirror: str) -> str | None:
     button = tree.css_first("button[onclick]")
     if button:
         onclick = button.attributes.get("onclick", "") or ""
-        if "location.href=" in onclick:
-            url = onclick.split("location.href=", 1)[1].strip().strip("';\"")
-            if url:
-                return _absolutize(url, mirror)
+        import re as _re
+        m = _re.search(r"location\s*\.\s*href\s*=\s*['\"]([^'\"]+)['\"]", onclick)
+        if m:
+            return _absolutize(m.group(1), mirror)
 
     # Fallback: any anchor pointing at a .pdf
     a = tree.css_first('a[href$=".pdf"]')

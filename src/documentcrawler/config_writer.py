@@ -55,6 +55,7 @@ def render_config_toml(cfg: Config) -> str:
     out.append(_emit_kv("request_timeout_s", g.request_timeout_s))
     out.append(_emit_kv("max_retries", g.max_retries))
     out.append(_emit_kv("min_pdf_bytes", g.min_pdf_bytes))
+    out.append(_emit_kv("pipeline_timeout_s", g.pipeline_timeout_s))
     out.append(_emit_kv("log_level", g.log_level))
     out.append("\n")
 

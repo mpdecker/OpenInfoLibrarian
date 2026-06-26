@@ -1,4 +1,4 @@
-from documentcrawler.cli import app
+from documentcrawler.cli import _main
 
 if __name__ == "__main__":
-    app()
+    _main()

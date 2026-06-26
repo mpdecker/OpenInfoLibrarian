@@ -13,7 +13,7 @@ from documentcrawler.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-_DEFAULT_MIRRORS = ["https://libgen.is", "https://libgen.rs", "https://libgen.li"]
+_DEFAULT_MIRRORS = ["https://libgen.li", "https://libgen.gs", "https://libgen.is", "https://libgen.rs"]
 
 
 @register("libgen")
@@ -30,12 +30,20 @@ class LibgenSource(Source):
         for mirror in mirrors:
             mirror = mirror.rstrip("/")
             url = f"{mirror}/scimag/?q={quote(doi)}"
+            html: str | None = None
             try:
                 html = await ctx.fetcher.get_text(url)
             except FetchError:
-                continue
+                pass
             except Exception:
-                continue
+                pass
+
+            if html is None:
+                try:
+                    html = await ctx.fetcher.render(url)
+                except Exception:
+                    continue
+
             mirror_links = _scimag_mirror_links(html, mirror)
             if mirror_links:
                 return [
@@ -60,25 +68,33 @@ class LibgenSource(Source):
         for mirror in mirrors:
             mirror = mirror.rstrip("/")
             url = f"{mirror}/index.php?req={quote(query)}"
+            html: str | None = None
             try:
                 html = await ctx.fetcher.get_text(url)
             except Exception:
-                continue
+                pass
+
+            if html is None:
+                try:
+                    html = await ctx.fetcher.render(url)
+                except Exception:
+                    continue
+
             md5 = _first_book_md5(html)
             if not md5:
                 continue
-            host = urlparse(mirror).hostname or "libgen.is"
+            host = urlparse(mirror).hostname or "libgen.li"
             return [
                 Candidate(
                     source=self.name,
-                    url=f"http://library.lol/main/{md5}",
+                    url=f"https://library.lol/main/{md5}",
                     confidence=0.65,
                     note=f"libgen:{host}",
                     needs_browser=False,
                 ),
                 Candidate(
                     source=self.name,
-                    url=f"http://libgen.li/ads.php?md5={md5}",
+                    url=f"https://libgen.li/ads.php?md5={md5}",
                     confidence=0.6,
                     note="libgen:ads",
                     needs_browser=False,

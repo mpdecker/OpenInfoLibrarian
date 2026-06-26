@@ -76,6 +76,7 @@ class ZLibrarySearcher(Searcher):
         for mirror in mirrors:
             mirror = mirror.rstrip("/")
             url = f"{mirror}/s/{quote(query)}"
+            html: str | None = None
             try:
                 html = await asyncio.wait_for(
                     self.fetcher.probe_text(
@@ -90,18 +91,29 @@ class ZLibrarySearcher(Searcher):
                     f"{mirror} did not respond in {_PER_MIRROR_TIMEOUT_S:.0f}s"
                 )
                 log.debug("zlibrary mirror %s timed out", mirror)
-                continue
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 log.debug("zlibrary mirror %s fetch failed: %s", mirror, e)
-                continue
 
-            hits = self._parse(html, mirror, limit)
-            if hits:
-                return hits
-            log.debug(
-                "zlibrary mirror %s returned 0 hits (likely Cloudflare challenge)", mirror
-            )
+            if html is not None:
+                hits = self._parse(html, mirror, limit)
+                if hits:
+                    return hits
+
+            # Browser fallback: retry through the Playwright pool for mirrors
+            # that returned a Cloudflare challenge / JS-gated page.
+            try:
+                rendered = await self.fetcher.render(url)
+                hits = self._parse(rendered, mirror, limit)
+                if hits:
+                    return hits
+            except Exception as e:
+                log.debug("zlibrary mirror %s render failed: %s", mirror, e)
+
+            if html is not None:
+                log.debug(
+                    "zlibrary mirror %s returned 0 hits (likely Cloudflare challenge)", mirror
+                )
 
         if last_err is not None:
             raise last_err

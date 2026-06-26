@@ -1,0 +1,6 @@
+doi,title,authors,year,isbn,keywords,url
+10.1038/nature14539,Deep learning,Yann LeCun;Yoshua Bengio;Geoffrey Hinton,2015,,deep-learning;review,
+10.48550/arXiv.1706.03762,Attention Is All You Need,Ashish Vaswani;Noam Shazeer,2017,,transformer;nlp,
+,Pattern Recognition and Machine Learning,Christopher M. Bishop,2006,9780387310732,textbook;ml,
+,The Elements of Statistical Learning,Trevor Hastie;Robert Tibshirani;Jerome Friedman,2009,9780387848570,textbook;statistics,
+10.1038/171737a0,Molecular structure of nucleic acids,J. D. Watson;F. H. C. Crick,1953,,biology;dna,

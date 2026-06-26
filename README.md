@@ -26,7 +26,7 @@ Z-Library) are off by default and must be opted into via `config.toml`.
 ## Install
 
 ```bash
-git clone <this repo>
+git clone https://github.com/mpdecker/DogTheLibrarian.git
 cd documentcrawler
 pip install -e .
 # optional: enable Playwright fallback for JS-heavy sources
@@ -75,9 +75,9 @@ directory, and tweak the filename template.
 | `arxiv`          | on      | arXiv API search by title/author                     |
 | `pubmed`         | on      | NCBI ESearch / EFetch, PubMed Central OA full text   |
 | `doaj`           | on      | DOAJ article search                                  |
-| `scihub`         | on      | DOI-based, mirror auto-discovery                     |
-| `annas_archive`  | on      | Search by title/ISBN/MD5                             |
-| `libgen`         | on      | LibGen scimag (papers) and main library (books)      |
+| `scihub`         | off     | DOI-based, mirror auto-discovery                     |
+| `annas_archive`  | off     | Search by title/ISBN/MD5                             |
+| `libgen`         | off     | LibGen scimag (papers) and main library (books)      |
 | `zlibrary`       | off     | Playwright + manual mirror list required             |
 
 ## GUI

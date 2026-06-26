@@ -10,11 +10,22 @@ from urllib.parse import urlparse
 _SOURCE_LABELS = {
     "annas_archive": "Anna's Archive",
     "arxiv": "arXiv",
+    "core": "CORE (OA)",
     "crossref": "Crossref",
+    "doi_org": "DOI.org",
+    "elsevier": "Elsevier",
+    "europeana": "Europeana",
+    "ieee": "IEEE Xplore",
+    "jstor": "JSTOR",
     "libgen": "LibGen",
+    "library_of_congress": "Library of Congress",
     "openalex": "OpenAlex",
     "openlibrary": "Open Library",
+    "scihub": "Sci-Hub",
     "semantic_scholar": "Semantic Scholar",
+    "springer": "Springer",
+    "uk_national_archives": "UK National Archives",
+    "wiley": "Wiley",
     "zlibrary": "Z-Library",
 }
 

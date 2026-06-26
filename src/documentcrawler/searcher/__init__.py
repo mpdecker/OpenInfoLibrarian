@@ -22,10 +22,16 @@ from documentcrawler.searcher.base import (
 # (registration side-effects).
 from documentcrawler.searcher import annas as _annas  # noqa: F401, E402, I001
 from documentcrawler.searcher import arxiv as _arxiv  # noqa: F401, E402
+from documentcrawler.searcher import core as _core  # noqa: F401, E402
 from documentcrawler.searcher import crossref as _crossref  # noqa: F401, E402
+from documentcrawler.searcher import doi_org as _doi_org  # noqa: F401, E402
+from documentcrawler.searcher import jstor as _jstor  # noqa: F401, E402
 from documentcrawler.searcher import libgen as _libgen  # noqa: F401, E402
+from documentcrawler.searcher import national_archives as _national_archives  # noqa: F401, E402
 from documentcrawler.searcher import openalex as _openalex  # noqa: F401, E402
 from documentcrawler.searcher import openlibrary as _openlibrary  # noqa: F401, E402
+from documentcrawler.searcher import publisher_metadata as _publisher_metadata  # noqa: F401, E402
+from documentcrawler.searcher import scihub_search as _scihub_search  # noqa: F401, E402
 from documentcrawler.searcher import semantic_scholar as _semantic_scholar  # noqa: F401, E402
 from documentcrawler.searcher import zlibrary as _zlibrary  # noqa: F401, E402
 

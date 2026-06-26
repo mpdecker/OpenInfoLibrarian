@@ -10,6 +10,7 @@ workers           = 4
 request_timeout_s = 30
 max_retries       = 3
 min_pdf_bytes     = 20480
+pipeline_timeout_s = 300
 log_level         = "INFO"
 
 [fetcher]
@@ -80,7 +81,7 @@ enabled = true
 enabled = true
 
 [sources.scihub]
-enabled = true
+enabled = false
 mirrors = [
     "https://sci-hub.se",
     "https://sci-hub.ru",
@@ -89,7 +90,7 @@ mirrors = [
 ]
 
 [sources.annas_archive]
-enabled = true
+enabled = false
 # Mirrors are tried in order. `.org` is the canonical site but is often
 # DNS-blocked by ISPs; `.gl` and `.se` are the most reliable fall-backs.
 mirrors = [
@@ -102,7 +103,7 @@ mirrors = [
 base_url = "https://annas-archive.org"
 
 [sources.libgen]
-enabled = true
+enabled = false
 # libgen.li is the most reliably reachable mirror today; .is/.rs are kept
 # as fall-backs but are frequently unreachable. Order = priority.
 mirrors = [
@@ -113,7 +114,7 @@ mirrors = [
 ]
 
 [sources.zlibrary]
-enabled = true
+enabled = false
 # Z-Library shuffles its public clear-net domains often. `z-lib.fm` is
 # the most reliably reachable today; the rest serve as fall-backs.  If
 # all of these get blocked from your network, install the [browser]

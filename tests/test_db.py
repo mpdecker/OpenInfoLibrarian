@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from documentcrawler.db import Database
 from documentcrawler.models import AttemptResult, DocStatus, DocumentQuery
 
@@ -62,3 +64,119 @@ def test_find_by_sha256(tmp_path):
     db.set_status(a, DocStatus.DONE, file_path="/x", sha256="deadbeef")
     found = db.find_by_sha256("deadbeef")
     assert found and found.id == a
+
+
+def test_database_health(tmp_path):
+    db = Database(tmp_path / "x.db")
+    assert db.health() is True
+    db.close()
+    assert db.health() is False
+
+
+def test_busy_timeout_set(tmp_path):
+    db = Database(tmp_path / "x.db")
+    row = db._conn.execute("PRAGMA busy_timeout").fetchone()
+    assert row[0] == 5000
+
+
+def test_save_and_list_searches(tmp_path):
+    db = Database(tmp_path / "x.db")
+    sid = db.save_search("my search", "machine learning", kind="auto",
+                         sources=["crossref", "arxiv"], limit_per_source=10)
+    searches = db.list_saved_searches()
+    assert len(searches) >= 1
+    assert any(s.id == sid and s.name == "my search" for s in searches)
+
+
+def test_get_saved_search(tmp_path):
+    db = Database(tmp_path / "x.db")
+    sid = db.save_search("test", "query text", kind="doi",
+                         sources=["openalex"])
+    s = db.get_saved_search(sid)
+    assert s is not None
+    assert s.name == "test"
+    assert s.query_text == "query text"
+    assert s.kind == "doi"
+    assert "openalex" in s.sources
+
+
+def test_get_saved_search_not_found(tmp_path):
+    db = Database(tmp_path / "x.db")
+    assert db.get_saved_search(99999) is None
+
+
+def test_delete_saved_search(tmp_path):
+    db = Database(tmp_path / "x.db")
+    sid = db.save_search("to_delete", "q")
+    db.delete_saved_search(sid)
+    assert db.get_saved_search(sid) is None
+
+
+def test_update_saved_search(tmp_path):
+    db = Database(tmp_path / "x.db")
+    sid = db.save_search("old", "old query")
+    db.update_saved_search(sid, name="new_name", query_text="new query",
+                           kind="isbn", sources=["crossref"], limit_per_source=5)
+    s = db.get_saved_search(sid)
+    assert s.name == "new_name"
+    assert s.query_text == "new query"
+    assert s.kind == "isbn"
+    assert s.limit_per_source == 5
+
+
+def test_update_saved_search_partial(tmp_path):
+    db = Database(tmp_path / "x.db")
+    sid = db.save_search("partial", "original", kind="auto",
+                         sources=["arxiv"])
+    db.update_saved_search(sid, query_text="updated")
+    s = db.get_saved_search(sid)
+    assert s.name == "partial"
+    assert s.query_text == "updated"
+    assert s.kind == "auto"
+    assert "arxiv" in s.sources
+
+
+def test_update_saved_search_not_found(tmp_path):
+    db = Database(tmp_path / "x.db")
+    with pytest.raises(ValueError, match="not found"):
+        db.update_saved_search(99999, name="nope")
+
+
+def test_autocomplete_from_saved_searches(tmp_path):
+    db = Database(tmp_path / "x.db")
+    db.save_search("ml", "machine learning with transformers")
+    suggestions = db.get_autocomplete_suggestions("machine")
+    assert any("machine learning" in s for s in suggestions)
+
+
+def test_autocomplete_from_document_titles(tmp_path):
+    db = Database(tmp_path / "x.db")
+    doc_id = db.add_query(DocumentQuery(title="Deep Learning for NLP", doi="10.1/a"))
+    db.set_status(doc_id, DocStatus.DONE, file_path="/tmp/fake.pdf")
+    suggestions = db.get_autocomplete_suggestions("Deep")
+    assert any("Deep Learning" in s for s in suggestions)
+
+
+def test_retry_transaction_succeeds(tmp_path):
+    db = Database(tmp_path / "x.db")
+    with db.retry_transaction(max_attempts=3) as conn:
+        conn.execute("SELECT 1")
+
+
+def test_versioned_migrations_apply(tmp_path):
+    db = Database(tmp_path / "x.db")
+    row = db._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+    ).fetchone()
+    assert row is not None
+    version = db._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert version >= 3
+
+
+def test_error_kind_column_exists(tmp_path):
+    db = Database(tmp_path / "x.db")
+    cols = {
+        row[1]
+        for row in db._conn.execute("PRAGMA table_info(attempts)").fetchall()
+    }
+    assert "error_kind" in cols

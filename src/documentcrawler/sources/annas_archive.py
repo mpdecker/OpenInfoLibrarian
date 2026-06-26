@@ -22,58 +22,76 @@ class AnnasArchiveSource(Source):
 
     async def search(self, ctx: SourceContext) -> list[Candidate]:
         base = (self.options.get("base_url") or "https://annas-archive.org").rstrip("/")
+        mirrors: list[str] = self.options.get("mirrors") or [
+            "https://annas-archive.org",
+            "https://annas-archive.gl",
+            "https://annas-archive.se",
+            "https://annas-archive.li",
+        ]
+        if base.rstrip("/") not in {m.rstrip("/") for m in mirrors}:
+            mirrors.insert(0, base)
 
         query = self._build_query(ctx)
         if not query:
             return []
 
-        search_url = f"{base}/search?q={quote(query)}"
-        try:
-            html = await ctx.fetcher.get_text(search_url)
-        except Exception as e:
-            log.debug("annas search request failed: %s", e)
+        for base in mirrors:
+            base = base.rstrip("/")
+            search_url = f"{base}/search?q={quote(query)}"
+            html: str | None = None
             try:
-                html = await ctx.fetcher.render(search_url)
-            except Exception as e2:
-                log.debug("annas search render failed: %s", e2)
-                return []
+                html = await ctx.fetcher.get_text(search_url)
+            except Exception as e:
+                log.debug("annas search request failed: %s", e)
 
-        md5 = _first_md5(html)
-        if not md5:
-            return []
+            if html is None:
+                try:
+                    html = await ctx.fetcher.render(search_url)
+                except Exception as e2:
+                    log.debug("annas search render failed: %s", e2)
+                    continue
 
-        detail_url = f"{base}/md5/{md5}"
-        try:
-            detail_html = await ctx.fetcher.get_text(detail_url)
-        except Exception:
+            md5 = _first_md5(html)
+            if not md5:
+                continue
+
+            detail_url = f"{base}/md5/{md5}"
+            detail_html: str | None = None
             try:
-                detail_html = await ctx.fetcher.render(detail_url)
+                detail_html = await ctx.fetcher.get_text(detail_url)
             except Exception:
-                return []
+                pass
 
-        candidates: list[Candidate] = []
-        for href in _slow_download_links(detail_html, base):
-            candidates.append(
-                Candidate(
-                    source=self.name,
-                    url=href,
-                    confidence=0.7,
-                    note=f"annas:{md5}",
-                    needs_browser=True,
-                )
-            )
+            if detail_html is None:
+                try:
+                    detail_html = await ctx.fetcher.render(detail_url)
+                except Exception:
+                    continue
 
-        # Also expose IPFS gateways as a faster fallback when present.
-        for href in _ipfs_links(detail_html):
-            candidates.append(
-                Candidate(
-                    source=self.name,
-                    url=href,
-                    confidence=0.6,
-                    note="annas:ipfs",
+            candidates: list[Candidate] = []
+            for href in _slow_download_links(detail_html, base):
+                candidates.append(
+                    Candidate(
+                        source=self.name,
+                        url=href,
+                        confidence=0.7,
+                        note=f"annas:{md5}",
+                        needs_browser=True,
+                    )
                 )
-            )
-        return candidates
+            for href in _ipfs_links(detail_html):
+                candidates.append(
+                    Candidate(
+                        source=self.name,
+                        url=href,
+                        confidence=0.6,
+                        note="annas:ipfs",
+                    )
+                )
+            if candidates:
+                return candidates
+
+        return []
 
     def _build_query(self, ctx: SourceContext) -> str | None:
         if ctx.metadata.doi:

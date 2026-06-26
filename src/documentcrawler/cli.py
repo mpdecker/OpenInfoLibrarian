@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from documentcrawler.config import (
     write_default_config,
 )
 from documentcrawler.db import Database
+from documentcrawler.errors import CLIError, DocumentCrawlerError
 from documentcrawler.fetcher import Fetcher
 from documentcrawler.importers import parse_file
 from documentcrawler.models import DocStatus, DocumentQuery
@@ -33,6 +36,24 @@ from documentcrawler.utils.sanitize import normalize_doi, normalize_isbn
 
 app = typer.Typer(help="Find and download academic documents from many sources.",
                   no_args_is_help=True, add_completion=False)
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    show_version: bool = typer.Option(False, "--version",
+                                      help="Show the version and exit."),
+    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c",
+                                     help="Path to config.toml."),
+):
+    ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config_path
+    if show_version:
+        typer.echo(__version__)
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        typer.echo(__version__)
+        return
 
 
 def _make_console() -> Console:
@@ -59,22 +80,20 @@ console = _make_console()
 log = get_logger("cli")
 
 
-def _load(config_path: Path | None = None) -> tuple[Config, Database]:
+@contextmanager
+def _loaded(config_path: Path | None = None) -> Generator[tuple[Config, Database], None, None]:
     cfg = load_config(config_path or DEFAULT_CONFIG_PATH)
     setup_logging(cfg.general.log_level)
     db = Database(cfg.general.db_path)
-    return cfg, db
+    try:
+        yield cfg, db
+    finally:
+        db.close()
 
 
-@app.command()
-def version() -> None:
-    """Show the installed version."""
-    typer.echo(__version__)
-
-
-@app.command()
+@app.command(rich_help_panel="Setup")
 def init(
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    ctx: typer.Context,
     with_examples: bool = typer.Option(
         False, "--with-examples",
         help="Also drop sample refs.bib / dois.txt / library.csv / references.ris "
@@ -84,16 +103,19 @@ def init(
         Path("examples"), "--examples-dir",
         help="Where to write sample reference files when --with-examples is set.",
     ),
+    force: bool = typer.Option(False, "--force",
+        help="Overwrite existing config.toml instead of copying the example."),
 ) -> None:
     """Create a default config.toml and initialise the SQLite database."""
+    config_path = ctx.obj["config_path"]
+    if force and config_path.exists():
+        config_path.unlink()
     target = write_default_config(config_path)
-    cfg = load_config(config_path)
-    db = Database(cfg.general.db_path)
-    db.close()
-    cfg.general.download_dir.mkdir(parents=True, exist_ok=True)
-    console.print(f"[green]wrote[/green] {target}")
-    console.print(f"[green]initialised db[/green] {cfg.general.db_path}")
-    console.print(f"[green]download dir[/green] {cfg.general.download_dir}")
+    with _loaded(config_path) as (cfg, db):
+        cfg.general.download_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"[green]wrote[/green] {target}")
+        console.print(f"[green]initialised db[/green] {cfg.general.db_path}")
+        console.print(f"[green]download dir[/green] {cfg.general.download_dir}")
     if with_examples:
         written = _write_examples(examples_dir)
         for path in written:
@@ -105,8 +127,9 @@ def init(
             )
 
 
-@app.command()
+@app.command(rich_help_panel="Setup")
 def examples(
+    ctx: typer.Context,
     dest: Path = typer.Argument(
         Path("examples"),
         help="Directory to copy example reference files into. Defaults to ./examples.",
@@ -147,8 +170,9 @@ def _write_examples(dest: Path) -> list[Path]:
     return written
 
 
-@app.command(name="add")
+@app.command(name="add", rich_help_panel="Queue")
 def add_cmd(
+    ctx: typer.Context,
     doi: str | None = typer.Option(None, "--doi"),
     title: str | None = typer.Option(None, "--title", "-t"),
     author: list[str] = typer.Option(None, "--author", "-a", help="May be passed multiple times."),
@@ -156,32 +180,29 @@ def add_cmd(
     isbn: str | None = typer.Option(None, "--isbn"),
     keyword: list[str] = typer.Option(None, "--keyword", "-k"),
     url: str | None = typer.Option(None, "--url"),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
 ) -> None:
     """Enqueue a single document."""
-    cfg, db = _load(config_path)
-    query = DocumentQuery(
-        doi=normalize_doi(doi),
-        title=title,
-        authors=list(author or []),
-        year=year,
-        isbn=normalize_isbn(isbn),
-        keywords=list(keyword or []),
-        url=url,
-    )
-    if query.is_empty():
-        console.print("[red]Need at least one of --doi/--title/--isbn/--url[/red]")
-        raise typer.Exit(2)
-    doc_id = db.add_query(query)
-    db.close()
-    console.print(f"[green]queued[/green] document #{doc_id}")
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        query = DocumentQuery(
+            doi=normalize_doi(doi),
+            title=title,
+            authors=list(author or []),
+            year=year,
+            isbn=normalize_isbn(isbn),
+            keywords=list(keyword or []),
+            url=url,
+        )
+        if query.is_empty():
+            raise CLIError("Need at least one of --doi/--title/--isbn/--url")
+        doc_id = db.add_query(query)
+        console.print(f"[green]queued[/green] document #{doc_id}")
 
 
-@app.command(name="import")
+@app.command(name="import", rich_help_panel="Queue")
 def import_cmd(
+    ctx: typer.Context,
     file: Path = typer.Argument(..., dir_okay=False,
         help="Path to a .csv / .tsv / .bib / .ris / .txt file of references."),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
 ) -> None:
     """Import documents from CSV / BibTeX / RIS / DOI list.
 
@@ -192,94 +213,87 @@ def import_cmd(
         documentcrawler import library.csv
     """
     if not file.exists():
-        console.print(
-            f"[red]File not found:[/red] {file}\n"
-            f"[yellow]Tip:[/yellow] the README uses [bold]refs.bib[/bold] as a "
-            f"placeholder — point this at one of your own files.\n"
-            f"Supported formats: .csv .tsv .bib .ris .txt (one DOI per line)."
-        )
-        raise typer.Exit(2)
+        raise CLIError(f"File not found: {file}")
     if file.is_dir():
-        console.print(f"[red]{file} is a directory, expected a file.[/red]")
-        raise typer.Exit(2)
+        raise CLIError(f"{file} is a directory, expected a file.")
     if not os.access(file, os.R_OK):
-        console.print(f"[red]Cannot read {file} (permission denied).[/red]")
-        raise typer.Exit(2)
+        raise CLIError(f"Cannot read {file} (permission denied).")
 
-    cfg, db = _load(config_path)
-    try:
-        queries = list(parse_file(file))
-    except ValueError as exc:
-        console.print(f"[red]Could not parse {file}:[/red] {exc}")
-        db.close()
-        raise typer.Exit(1) from exc
-    if not queries:
-        console.print(
-            f"[yellow]No references found in {file}.[/yellow] "
-            f"Check that it's a CSV/BibTeX/RIS/DOI-list file."
-        )
-        db.close()
-        return
-    added, skipped = db.add_many(queries)
-    db.close()
-    console.print(f"[green]parsed[/green] {len(queries)} entries, "
-                  f"[green]added[/green] {added}, [yellow]skipped[/yellow] {skipped}")
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        try:
+            queries = list(parse_file(file))
+        except ValueError as exc:
+            raise CLIError(f"Could not parse {file}: {exc}") from exc
+        if not queries:
+            console.print(
+                f"[yellow]No references found in {file}.[/yellow] "
+                f"Check that it's a CSV/BibTeX/RIS/DOI-list file."
+            )
+            return
+        added, skipped = db.add_many(queries)
+        console.print(f"[green]parsed[/green] {len(queries)} entries, "
+                      f"[green]added[/green] {added}, [yellow]skipped[/yellow] {skipped}")
 
 
-@app.command()
+@app.command(rich_help_panel="Run")
 def run(
+    ctx: typer.Context,
     workers: int | None = typer.Option(None, "--workers", "-w"),
     sources: str | None = typer.Option(None, "--sources",
         help="Comma-separated source names that override config order."),
     only_failed: bool = typer.Option(False, "--only-failed",
         help="Only retry rows currently in 'failed' state."),
+    retry_all: bool = typer.Option(False, "--retry-all",
+        help="Also retry documents with permanent failures (invalid DOI, not a PDF, etc.)."),
     legit_only: bool = typer.Option(False, "--legit-only",
         help="Restrict to open-access sources (open_access, arxiv, pubmed, doaj)."),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+        help="Search sources but skip download and write. Reports what would be downloaded."),
+    timeout: int | None = typer.Option(None, "--timeout",
+        help="Per-document pipeline timeout in seconds (overrides config)."),
 ) -> None:
     """Process pending (or failed) documents."""
-    cfg, db = _load(config_path)
-    docs = db.pending_or_failed(only_failed=only_failed)
-    if not docs:
-        console.print("[yellow]Nothing to do.[/yellow]")
-        db.close()
-        return
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        docs = db.pending_or_failed(only_failed=only_failed, retry_permanent=retry_all)
+        if not docs:
+            console.print("[yellow]Nothing to do.[/yellow]")
+            return
 
-    sources_override = None
-    if sources:
-        sources_override = [s.strip() for s in sources.split(",") if s.strip()]
+        sources_override = None
+        if sources:
+            sources_override = [s.strip() for s in sources.split(",") if s.strip()]
 
-    pipeline = Pipeline(
-        cfg, db,
-        sources_override=sources_override,
-        legit_only=legit_only,
-        workers=workers or cfg.general.workers,
-    )
-    summary = asyncio.run(pipeline.run(docs))
-    db.close()
+        pipeline = Pipeline(
+            cfg, db,
+            sources_override=sources_override,
+            legit_only=legit_only,
+            workers=workers if workers is not None else cfg.general.workers,
+            dry_run=dry_run,
+            per_doc_timeout_s=float(timeout) if timeout else cfg.general.pipeline_timeout_s,
+        )
+        summary = asyncio.run(pipeline.run(docs))
 
-    table = Table(title="Run summary")
-    table.add_column("metric")
-    table.add_column("count", justify="right")
-    table.add_row("total", str(summary.total))
-    table.add_row("succeeded", f"[green]{summary.succeeded}[/green]")
-    table.add_row("failed", f"[red]{summary.failed}[/red]")
-    for src, n in sorted(summary.per_source.items(), key=lambda x: -x[1]):
-        table.add_row(f"  via {src}", str(n))
-    console.print(table)
-    if summary.failed and summary.succeeded == 0:
-        sys.exit(1)
+        table = Table(title="Run summary")
+        table.add_column("metric")
+        table.add_column("count", justify="right")
+        table.add_row("total", str(summary.total))
+        table.add_row("succeeded", f"[green]{summary.succeeded}[/green]")
+        table.add_row("failed", f"[red]{summary.failed}[/red]")
+        for src, n in sorted(summary.per_source.items(), key=lambda x: -x[1]):
+            table.add_row(f"  via {src}", str(n))
+        console.print(table)
+        if summary.failed and summary.succeeded == 0:
+            raise DocumentCrawlerError("All documents failed")
 
 
-@app.command()
+@app.command(rich_help_panel="Run")
 def status(
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    ctx: typer.Context,
 ) -> None:
     """Show queue counts and per-source success rates."""
-    cfg, db = _load(config_path)
-    counts = db.status_summary()
-    sources = db.per_source_stats()
-    db.close()
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        counts = db.status_summary()
+        sources = db.per_source_stats()
 
     t1 = Table(title="Documents by status")
     t1.add_column("status")
@@ -302,18 +316,18 @@ def status(
         console.print(t2)
 
 
-@app.command(name="list")
+@app.command(name="list", rich_help_panel="Queue")
 def list_cmd(
-    status_filter: str | None = typer.Option(None, "--status",
-        help="pending|in_progress|done|failed"),
+    ctx: typer.Context,
+    status_filter: DocStatus | None = typer.Option(None, "--status", case_sensitive=False),
     limit: int = typer.Option(50, "--limit", "-n"),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
 ) -> None:
     """List documents in the queue."""
-    cfg, db = _load(config_path)
-    st = DocStatus(status_filter) if status_filter else None
-    rows = db.list_documents(status=st, limit=limit)
-    db.close()
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        rows = db.list_documents(status=status_filter, limit=limit)
+        total_count = sum(db.status_summary().values())
+        if status_filter:
+            total_count = sum(v for k, v in db.status_summary().items() if k == status_filter.value)
     table = Table(title=f"Documents ({len(rows)})")
     table.add_column("id", justify="right")
     table.add_column("status")
@@ -332,22 +346,21 @@ def list_cmd(
             r.file_path or "",
         )
     console.print(table)
+    if len(rows) == limit and total_count > limit:
+        console.print(f"[dim]Showing {limit} of {total_count} documents. Use --limit to show more.[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel="Queue")
 def show(
+    ctx: typer.Context,
     doc_id: int = typer.Argument(...),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
 ) -> None:
     """Show a single document plus its full attempt history."""
-    cfg, db = _load(config_path)
-    doc = db.get(doc_id)
-    if not doc:
-        console.print(f"[red]No such document #{doc_id}[/red]")
-        db.close()
-        raise typer.Exit(2)
-    attempts = db.attempts_for(doc_id)
-    db.close()
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        doc = db.get(doc_id)
+        if not doc:
+            raise CLIError(f"No such document #{doc_id}")
+        attempts = db.attempts_for(doc_id)
 
     console.print(f"[bold]#{doc.id}[/bold]  {_status_color(doc.status)}")
     if doc.doi:
@@ -383,49 +396,57 @@ def show(
         console.print(t)
 
 
-@app.command()
+@app.command(rich_help_panel="Queue")
 def retry(
+    ctx: typer.Context,
     doc_id: int | None = typer.Argument(None),
     all_failed: bool = typer.Option(False, "--all-failed"),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    include_permanent: bool = typer.Option(False, "--include-permanent",
+        help="Also reset documents with permanent failures."),
+    source: str | None = typer.Option(None, "--source",
+        help="Only reset documents whose last attempt was from the given source."),
 ) -> None:
     """Reset failed documents to pending so the next `run` retries them."""
-    cfg, db = _load(config_path)
-    if all_failed:
-        rows = db.list_documents(DocStatus.FAILED)
-        for r in rows:
-            db.set_status(r.id, DocStatus.PENDING, error=None)
-        console.print(f"[green]reset[/green] {len(rows)} failed -> pending")
-    elif doc_id is not None:
-        doc = db.get(doc_id)
-        if not doc:
-            console.print(f"[red]No such document #{doc_id}[/red]")
-            db.close()
-            raise typer.Exit(2)
-        db.set_status(doc_id, DocStatus.PENDING, error=None)
-        console.print(f"[green]reset[/green] #{doc_id} -> pending")
-    else:
-        console.print("[red]Pass a doc id or --all-failed[/red]")
-        db.close()
-        raise typer.Exit(2)
-    db.close()
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        if all_failed:
+            if source:
+                rows = db.failed_by_source(source)
+            else:
+                rows = db.pending_or_failed(only_failed=True, retry_permanent=include_permanent)
+            for r in rows:
+                db.set_status(r.id, DocStatus.PENDING, error=None)
+            console.print(f"[green]reset[/green] {len(rows)} failed -> pending")
+        elif doc_id is not None:
+            doc = db.get(doc_id)
+            if not doc:
+                raise CLIError(f"No such document #{doc_id}")
+            db.set_status(doc_id, DocStatus.PENDING, error=None)
+            console.print(f"[green]reset[/green] #{doc_id} -> pending")
+        else:
+            raise CLIError("Pass a doc id or --all-failed")
 
 
 _DEFAULT_SEARCH_SOURCES = [
     "crossref",
     "openalex",
     "arxiv",
+    "core",
     "openlibrary",
     "semantic_scholar",
+    "doi_org",
+    "scihub",
     "annas_archive",
     "libgen",
     "zlibrary",
 ]
-_LEGIT_SEARCH_SOURCES = {"crossref", "openalex", "arxiv", "openlibrary", "semantic_scholar"}
+_LEGIT_SEARCH_SOURCES = {
+    "crossref", "openalex", "arxiv", "core", "openlibrary", "semantic_scholar", "doi_org",
+}
 
 
-@app.command()
+@app.command(rich_help_panel="Queue")
 def search(
+    ctx: typer.Context,
     query: str = typer.Argument(..., help="Free-text search (or DOI / ISBN)."),
     sources: str | None = typer.Option(
         None, "--sources", "-s",
@@ -447,86 +468,86 @@ def search(
         30.0, "--timeout",
         help="Per-source timeout in seconds. Shadow library mirrors are often slow.",
     ),
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    display_limit: int = typer.Option(50, "--display-limit",
+        help="Max hits to display in the merged results table."),
 ) -> None:
     """Search multiple metadata + library sources for a query."""
-    cfg, db = _load(config_path)
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
 
-    src_list = (
-        [s.strip() for s in sources.split(",") if s.strip()]
-        if sources
-        else list(_DEFAULT_SEARCH_SOURCES)
-    )
-    if legit_only:
-        src_list = [s for s in src_list if s in _LEGIT_SEARCH_SOURCES]
-
-    options = _searcher_options(cfg)
-    sq = SearchQuery(
-        text=query,
-        kind=kind,
-        sources=src_list,
-        limit_per_source=limit,
-        options_per_source=options,
-        overall_timeout_s=max(5.0, timeout),
-    )
-
-    async def _run() -> Any:
-        async with Fetcher(cfg.fetcher,
-                           timeout_s=cfg.general.request_timeout_s,
-                           max_retries=cfg.general.max_retries) as fetcher:
-            ms = MultiSearcher(fetcher)
-            return await ms.search(sq)
-
-    result = asyncio.run(_run())
-
-    runs_table = Table(title="Per-source")
-    runs_table.add_column("source")
-    runs_table.add_column("hits", justify="right")
-    runs_table.add_column("time", justify="right")
-    runs_table.add_column("error")
-    for r in result.runs:
-        runs_table.add_row(
-            r.source, str(len(r.hits)), f"{r.elapsed_s:.2f}s", r.error or ""
+        src_list = (
+            [s.strip() for s in sources.split(",") if s.strip()]
+            if sources
+            else list(_DEFAULT_SEARCH_SOURCES)
         )
-    console.print(runs_table)
+        if legit_only:
+            src_list = [s for s in src_list if s in _LEGIT_SEARCH_SOURCES]
 
-    table = Table(title=f"Merged hits ({len(result.merged)})")
-    table.add_column("#", justify="right")
-    table.add_column("src")
-    table.add_column("title")
-    table.add_column("yr", justify="right")
-    table.add_column("authors")
-    table.add_column("doi/isbn")
-    table.add_column("pdf")
-    for i, h in enumerate(result.merged[:50]):
-        idref = h.doi or h.isbn or ""
-        table.add_row(
-            str(i + 1),
-            h.source,
-            (h.title or "")[:80],
-            str(h.year or ""),
-            h.author_str[:40],
-            idref[:35],
-            "[green]y[/green]" if h.has_pdf else "",
+        options = _searcher_options(cfg)
+        sq = SearchQuery(
+            text=query,
+            kind=kind,
+            sources=src_list,
+            limit_per_source=limit,
+            options_per_source=options,
+            overall_timeout_s=max(5.0, timeout),
         )
-    console.print(table)
 
-    if queue_all or queue_top:
-        to_queue: list[SearchHit] = (
-            result.merged if queue_all else result.merged[: max(0, queue_top)]
-        )
-        added = 0
-        for h in to_queue:
-            q = _hit_to_query(h)
-            if q.is_empty():
-                continue
-            try:
-                db.add_query(q)
-                added += 1
-            except ValueError:
-                continue
-        console.print(f"[green]Queued {added} of {len(to_queue)} hits[/green]")
-    db.close()
+        async def _run() -> Any:
+            async with Fetcher(cfg.fetcher,
+                               timeout_s=cfg.general.request_timeout_s,
+                               max_retries=cfg.general.max_retries) as fetcher:
+                ms = MultiSearcher(fetcher)
+                return await ms.search(sq)
+
+        result = asyncio.run(_run())
+
+        runs_table = Table(title="Per-source")
+        runs_table.add_column("source")
+        runs_table.add_column("hits", justify="right")
+        runs_table.add_column("time", justify="right")
+        runs_table.add_column("error")
+        for r in result.runs:
+            runs_table.add_row(
+                r.source, str(len(r.hits)), f"{r.elapsed_s:.2f}s", r.error or ""
+            )
+        console.print(runs_table)
+
+        table = Table(title=f"Merged hits ({len(result.merged)})")
+        table.add_column("#", justify="right")
+        table.add_column("src")
+        table.add_column("title")
+        table.add_column("yr", justify="right")
+        table.add_column("authors")
+        table.add_column("doi/isbn")
+        table.add_column("pdf")
+        for i, h in enumerate(result.merged[:display_limit]):
+            idref = h.doi or h.isbn or ""
+            table.add_row(
+                str(i + 1),
+                h.source,
+                (h.title or "")[:80],
+                str(h.year or ""),
+                h.author_str[:40],
+                idref[:35],
+                "[green]y[/green]" if h.has_pdf else "",
+            )
+        console.print(table)
+
+        if queue_all or queue_top:
+            to_queue: list[SearchHit] = (
+                result.merged if queue_all else result.merged[: max(0, queue_top)]
+            )
+            added = 0
+            for h in to_queue:
+                q = _hit_to_query(h)
+                if q.is_empty():
+                    continue
+                try:
+                    db.add_query(q)
+                    added += 1
+                except ValueError:
+                    continue
+            console.print(f"[green]Queued {added} of {len(to_queue)} hits[/green]")
 
 
 def _searcher_options(cfg: Config) -> dict[str, dict[str, Any]]:
@@ -554,6 +575,9 @@ def _searcher_options(cfg: Config) -> dict[str, dict[str, Any]]:
     zlib = cfg.source("zlibrary").options or {}
     if zlib.get("mirrors"):
         out["zlibrary"] = {"mirrors": zlib["mirrors"]}
+    scihub = cfg.source("scihub").options or {}
+    if scihub.get("mirrors"):
+        out["scihub"] = {"mirrors": scihub["mirrors"]}
     return out
 
 
@@ -569,39 +593,52 @@ def _hit_to_query(h: SearchHit) -> DocumentQuery:
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Services")
+def serve(
+    ctx: typer.Context,
+    host: str = typer.Option("127.0.0.1", "--host", "-h"),
+    port: int = typer.Option(8099, "--port", "-p"),
+) -> None:
+    """Start an HTTP acquisition server (for Zetetic / SecondBrain integration)."""
+    try:
+        from documentcrawler.server import start_server
+    except ImportError as e:
+        raise CLIError(f"Server unavailable: {e}") from e
+    start_server(host, port, ctx.obj["config_path"])
+
+
+@app.command(rich_help_panel="Services")
 def gui(
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    ctx: typer.Context,
 ) -> None:
     """Launch the desktop GUI."""
     try:
         from documentcrawler.gui import launch
     except ImportError as e:
-        console.print(f"[red]GUI unavailable: {e}[/red]")
-        raise typer.Exit(1) from e
-    launch(config_path)
+        raise CLIError(f"GUI unavailable: {e}") from e
+    launch(ctx.obj["config_path"])
 
 
-@app.command()
+@app.command(rich_help_panel="Setup")
 def sources(
-    config_path: Path = typer.Option(DEFAULT_CONFIG_PATH, "--config", "-c"),
+    ctx: typer.Context,
 ) -> None:
     """List configured sources and whether each is enabled."""
-    cfg, _ = _load(config_path)
-    t = Table(title="Sources")
-    t.add_column("name")
-    t.add_column("enabled")
-    t.add_column("order")
-    order_map = {n: i for i, n in enumerate(cfg.sources_order)}
-    all_names = sorted(set(cfg.sources_order) | set(cfg.sources.keys()))
-    for n in all_names:
-        sc = cfg.source(n)
-        t.add_row(
-            n,
-            "[green]yes[/green]" if sc.enabled else "[dim]no[/dim]",
-            str(order_map.get(n, "-")),
-        )
-    console.print(t)
+    with _loaded(ctx.obj["config_path"]) as (cfg, _db):
+        t = Table(title="Sources")
+        t.add_column("name")
+        t.add_column("enabled")
+        t.add_column("order")
+        order_map = {n: i for i, n in enumerate(cfg.sources_order)}
+        all_names = sorted(set(cfg.sources_order) | set(cfg.sources.keys()))
+        for n in all_names:
+            sc = cfg.source(n)
+            t.add_row(
+                n,
+                "[green]yes[/green]" if sc.enabled else "[dim]no[/dim]",
+                str(order_map.get(n, "-")),
+            )
+        console.print(t)
 
 
 def _status_color(s: DocStatus) -> str:
@@ -614,5 +651,16 @@ def _status_color(s: DocStatus) -> str:
     return f"[{color}]{s.value}[/{color}]"
 
 
+def _main():
+    try:
+        app()
+    except CLIError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(2)
+    except DocumentCrawlerError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    app()
+    _main()
