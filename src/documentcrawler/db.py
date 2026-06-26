@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from documentcrawler.errors import ConfigError
 from documentcrawler.models import (
     AttemptResult,
     DocStatus,
     DocumentQuery,
     DocumentRow,
+    SavedSearchRow,
 )
 
 SCHEMA = """
@@ -59,6 +63,19 @@ CREATE TABLE IF NOT EXISTS attempts (
 
 CREATE INDEX IF NOT EXISTS idx_attempts_doc    ON attempts(document_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_source ON attempts(source);
+
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL,
+    query_text        TEXT NOT NULL,
+    kind              TEXT DEFAULT 'auto',
+    sources           TEXT,        -- JSON array
+    limit_per_source  INTEGER DEFAULT 15,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name);
 """
 
 
@@ -78,6 +95,11 @@ def _parse_dt(value: str | None) -> datetime:
 def _json_list(value: str | None) -> list[Any]:
     if not value:
         return []
+    try:
+        out = json.loads(value)
+        return list(out) if isinstance(out, list) else []
+    except json.JSONDecodeError:
+        return []
 
 
 def _json_object(value: str | None) -> dict[str, Any]:
@@ -88,11 +110,16 @@ def _json_object(value: str | None) -> dict[str, Any]:
         return dict(out) if isinstance(out, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _safe_int(row: sqlite3.Row, key: str) -> int | None:
     try:
-        out = json.loads(value)
-        return list(out) if isinstance(out, list) else []
-    except json.JSONDecodeError:
-        return []
+        val = row[key]
+    except (KeyError, IndexError):
+        return None
+    if val is None:
+        return None
+    return int(val)
 
 
 class Database:
@@ -100,17 +127,64 @@ class Database:
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._validate_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(SCHEMA)
-        self._migrate()
+        self._run_versioned_migrations()
 
-    def _migrate(self) -> None:
-        """Apply small idempotent schema migrations for existing DB files."""
-        # Old versions had a UNIQUE partial index on sha256; convert to plain.
+    def _validate_path(self) -> None:
+        parent = self.path.parent
+        if not parent.exists():
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise ConfigError(
+                    f"Cannot create database directory {parent}: {e}"
+                ) from e
+        if parent.exists() and not os.access(parent, os.W_OK):
+            raise ConfigError(
+                f"Database directory {parent} is not writable"
+            )
+
+    def _run_versioned_migrations(self) -> None:
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version "
+            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        current = self._conn.execute(
+            "SELECT MAX(version) FROM schema_version"
+        ).fetchone()[0] or 0
+
+        migrations = [
+            (1, self._migrate_1),
+            (2, self._migrate_2),
+            (3, self._migrate_3),
+            (4, self._migrate_4),
+        ]
+
+        for version, fn in migrations:
+            if version > current:
+                fn()
+                self._conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)", (version,)
+                )
+
+    def _migrate_1(self) -> None:
+        """Add `extra` column to documents if missing."""
+        cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "extra" not in cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN extra TEXT")
+
+    def _migrate_2(self) -> None:
+        """Convert old UNIQUE partial index on sha256 to plain index."""
         row = self._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_documents_sha256'"
         ).fetchone()
@@ -123,15 +197,34 @@ class Database:
                 self._conn.execute(
                     "CREATE INDEX idx_documents_sha256 ON documents(sha256)"
                 )
+
+    def _migrate_3(self) -> None:
+        """Add error_kind column to attempts table."""
+        cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(attempts)").fetchall()
+        }
+        if "error_kind" not in cols:
+            self._conn.execute("ALTER TABLE attempts ADD COLUMN error_kind TEXT")
+
+    def _migrate_4(self) -> None:
+        """Add timeout_s column to documents table."""
         cols = {
             row[1]
             for row in self._conn.execute("PRAGMA table_info(documents)").fetchall()
         }
-        if "extra" not in cols:
-            self._conn.execute("ALTER TABLE documents ADD COLUMN extra TEXT")
+        if "timeout_s" not in cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN timeout_s INTEGER")
 
     def close(self) -> None:
         self._conn.close()
+
+    def health(self) -> bool:
+        try:
+            self._conn.execute("SELECT 1")
+            return True
+        except sqlite3.Error:
+            return False
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -143,7 +236,23 @@ class Database:
             self._conn.execute("ROLLBACK")
             raise
 
-    def add_query(self, q: DocumentQuery) -> int:
+    @contextmanager
+    def retry_transaction(self, max_attempts: int = 3) -> Iterator[sqlite3.Connection]:
+        last_err: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with self.transaction() as conn:
+                    yield conn
+                return
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if attempt < max_attempts:
+                    time.sleep(0.05 * attempt)
+            except Exception:
+                raise
+        raise last_err  # type: ignore[misc]
+
+    def add_query(self, q: DocumentQuery, timeout_s: int | None = None) -> int:
         if q.is_empty():
             raise ValueError("Refusing to enqueue an empty query (no doi/title/isbn/url).")
         existing = self._find_duplicate(q)
@@ -152,8 +261,8 @@ class Database:
         cur = self._conn.execute(
             """
             INSERT INTO documents (doi, title, authors, year, isbn, keywords, extra, url,
-                                   status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                                   timeout_s, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 q.doi,
@@ -164,6 +273,7 @@ class Database:
                 json.dumps(q.keywords),
                 json.dumps(q.extra),
                 q.url,
+                timeout_s,
                 _utcnow_iso(),
                 _utcnow_iso(),
             ),
@@ -230,12 +340,42 @@ class Database:
             params.append(limit)
         return [_row_to_document(r) for r in self._conn.execute(sql, params).fetchall()]
 
-    def pending_or_failed(self, only_failed: bool = False) -> list[DocumentRow]:
+    def pending_or_failed(
+        self, only_failed: bool = False, retry_permanent: bool = False
+    ) -> list[DocumentRow]:
         if only_failed:
-            return self.list_documents(DocStatus.FAILED)
+            if retry_permanent:
+                return self.list_documents(DocStatus.FAILED)
+            return self._transient_failures()
         rows = self._conn.execute(
             "SELECT * FROM documents WHERE status IN ('pending','failed','in_progress') "
             "ORDER BY id ASC"
+        ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def _transient_failures(self) -> list[DocumentRow]:
+        rows = self._conn.execute(
+            """SELECT d.* FROM documents d
+               WHERE d.status = 'failed'
+               AND COALESCE(
+                 (SELECT a.error_kind FROM attempts a
+                  WHERE a.document_id = d.id
+                  ORDER BY a.id DESC LIMIT 1),
+                 'transient'
+               ) = 'transient'
+               ORDER BY d.id ASC"""
+        ).fetchall()
+        return [_row_to_document(r) for r in rows]
+
+    def failed_by_source(self, source: str) -> list[DocumentRow]:
+        rows = self._conn.execute(
+            """SELECT d.* FROM documents d
+               WHERE d.status = 'failed'
+               AND (SELECT a.source FROM attempts a
+                    WHERE a.document_id = d.id
+                    ORDER BY a.id DESC LIMIT 1) = ?
+               ORDER BY d.id ASC""",
+            (source,)
         ).fetchall()
         return [_row_to_document(r) for r in rows]
 
@@ -293,8 +433,8 @@ class Database:
         self._conn.execute(
             """
             INSERT INTO attempts (document_id, source, candidate_url, http_status, bytes,
-                                  success, error, started_at, finished_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  success, error, error_kind, started_at, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
@@ -304,6 +444,7 @@ class Database:
                 attempt.bytes,
                 1 if attempt.success else 0,
                 attempt.error,
+                attempt.error_kind,
                 attempt.started_at.isoformat(),
                 attempt.finished_at.isoformat(),
             ),
@@ -323,6 +464,7 @@ class Database:
                     http_status=r["http_status"],
                     bytes=r["bytes"],
                     error=r["error"],
+                    error_kind=r["error_kind"] if "error_kind" in r.keys() else None,
                     started_at=_parse_dt(r["started_at"]),
                     finished_at=_parse_dt(r["finished_at"]),
                 )
@@ -363,6 +505,137 @@ class Database:
         ).fetchone()
         return _row_to_document(row) if row else None
 
+    # -------------------------------------------------------------------------
+    # Saved searches
+    # -------------------------------------------------------------------------
+
+    def save_search(
+        self,
+        name: str,
+        query_text: str,
+        kind: str = "auto",
+        sources: list[str] | None = None,
+        limit_per_source: int = 15,
+    ) -> int:
+        """Save a search configuration. Returns the new saved search id."""
+        cur = self._conn.execute(
+            """
+            INSERT INTO saved_searches (name, query_text, kind, sources, limit_per_source,
+                                        created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                query_text,
+                kind,
+                json.dumps(sources or []),
+                limit_per_source,
+                _utcnow_iso(),
+                _utcnow_iso(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def list_saved_searches(self, limit: int = 50) -> list[SavedSearchRow]:
+        """Return saved searches ordered by most recently updated first."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM saved_searches
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [_row_to_saved_search(r) for r in rows]
+
+    def get_saved_search(self, search_id: int) -> SavedSearchRow | None:
+        """Get a single saved search by id."""
+        row = self._conn.execute(
+            "SELECT * FROM saved_searches WHERE id = ?", (search_id,)
+        ).fetchone()
+        return _row_to_saved_search(row) if row else None
+
+    def delete_saved_search(self, search_id: int) -> None:
+        """Delete a saved search by id."""
+        self._conn.execute("DELETE FROM saved_searches WHERE id = ?", (search_id,))
+
+    def update_saved_search(
+        self,
+        search_id: int,
+        *,
+        name: str | None = None,
+        query_text: str | None = None,
+        kind: str | None = None,
+        sources: list[str] | None = None,
+        limit_per_source: int | None = None,
+    ) -> None:
+        """Update a saved search. Only provided fields are updated."""
+        current = self.get_saved_search(search_id)
+        if current is None:
+            raise ValueError(f"Saved search {search_id} not found")
+        self._conn.execute(
+            """
+            UPDATE saved_searches
+               SET name = COALESCE(?, name),
+                   query_text = COALESCE(?, query_text),
+                   kind = COALESCE(?, kind),
+                   sources = COALESCE(?, sources),
+                   limit_per_source = COALESCE(?, limit_per_source),
+                   updated_at = ?
+             WHERE id = ?
+            """,
+            (
+                name,
+                query_text,
+                kind,
+                json.dumps(sources) if sources is not None else None,
+                limit_per_source,
+                _utcnow_iso(),
+                search_id,
+            ),
+        )
+
+    def get_autocomplete_suggestions(self, prefix: str, limit: int = 10) -> list[str]:
+        """Return autocomplete suggestions from saved searches and document titles."""
+        suggestions: list[str] = []
+        seen: set[str] = set()
+
+        # First: saved searches (most recent first)
+        rows = self._conn.execute(
+            """
+            SELECT query_text FROM saved_searches
+            WHERE query_text LIKE ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (f"%{prefix}%", limit),
+        ).fetchall()
+        for r in rows:
+            text = r["query_text"]
+            if text and text.lower() not in seen:
+                suggestions.append(text)
+                seen.add(text.lower())
+
+        # Then: document titles (distinct, non-pending)
+        remaining = limit - len(suggestions)
+        if remaining > 0:
+            rows = self._conn.execute(
+                """
+                SELECT DISTINCT title FROM documents
+                WHERE title LIKE ? AND status != 'pending'
+                ORDER BY title ASC
+                LIMIT ?
+                """,
+                (f"%{prefix}%", remaining),
+            ).fetchall()
+            for r in rows:
+                text = r["title"]
+                if text and text.lower() not in seen:
+                    suggestions.append(text)
+                    seen.add(text.lower())
+
+        return suggestions
+
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
     return DocumentRow(
@@ -379,6 +652,20 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRow:
         file_path=row["file_path"],
         sha256=row["sha256"],
         error=row["error"],
+        timeout_s=_safe_int(row, "timeout_s"),
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+    )
+
+
+def _row_to_saved_search(row: sqlite3.Row) -> SavedSearchRow:
+    return SavedSearchRow(
+        id=int(row["id"]),
+        name=row["name"],
+        query_text=row["query_text"],
+        kind=row["kind"] or "auto",
+        sources=_json_list(row["sources"]),
+        limit_per_source=row["limit_per_source"] or 15,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )

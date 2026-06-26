@@ -37,6 +37,8 @@ class Source(ABC):
 
     async def fetch(self, candidate: Candidate, ctx: SourceContext) -> bytes | None:
         """Resolve interstitial HTML, follow mirror links, then download bytes."""
+        if candidate.needs_browser:
+            return await ctx.fetcher._download_document_browser(candidate.url)
         return await ctx.fetcher.download_document(candidate.url)
 
 

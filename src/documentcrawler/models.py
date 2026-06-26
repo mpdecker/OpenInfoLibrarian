@@ -16,6 +16,11 @@ class DocStatus(str, Enum):
     FAILED = "failed"
 
 
+class ErrorKind(str, Enum):
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
+
+
 class DocumentQuery(BaseModel):
     """A user-supplied reference to a document we want to download."""
 
@@ -64,6 +69,7 @@ class AttemptResult(BaseModel):
     http_status: int | None = None
     bytes: int | None = None
     error: str | None = None
+    error_kind: str | None = None
     started_at: datetime
     finished_at: datetime
 
@@ -84,5 +90,19 @@ class DocumentRow(BaseModel):
     file_path: str | None = None
     sha256: str | None = None
     error: str | None = None
+    timeout_s: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedSearchRow(BaseModel):
+    """A saved search query with its configuration."""
+
+    id: int
+    name: str
+    query_text: str
+    kind: str = "auto"
+    sources: list[str] = Field(default_factory=list)
+    limit_per_source: int = 15
     created_at: datetime
     updated_at: datetime

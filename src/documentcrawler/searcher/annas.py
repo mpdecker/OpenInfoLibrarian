@@ -25,6 +25,7 @@ from selectolax.parser import HTMLParser, Node
 
 from documentcrawler.searcher.base import Searcher, SearchHit, register
 from documentcrawler.utils.logging import get_logger
+from documentcrawler.utils.sanitize import normalize_doi, normalize_isbn
 
 log = get_logger(__name__)
 
@@ -58,6 +59,7 @@ class AnnasArchiveSearcher(Searcher):
         last_err: Exception | None = None
         for mirror in mirrors:
             url = f"{mirror}/search?q={quote(query)}"
+            html: str | None = None
             try:
                 html = await asyncio.wait_for(
                     self.fetcher.probe_text(
@@ -70,16 +72,26 @@ class AnnasArchiveSearcher(Searcher):
             except TimeoutError:
                 last_err = TimeoutError(f"{mirror} did not respond in {_PER_MIRROR_TIMEOUT_S:.0f}s")
                 log.debug("annas mirror %s timed out", mirror)
-                continue
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 log.debug("annas mirror %s fetch failed: %s", mirror, e)
-                continue
 
-            hits = self._parse(html, mirror, limit)
-            if hits:
-                return hits
-            log.debug("annas mirror %s returned 0 hits (likely anti-scrape page)", mirror)
+            if html is not None:
+                hits = self._parse(html, mirror, limit)
+                if hits:
+                    return hits
+
+            # Render fallback for JS-gated/Cloudflare mirrors
+            try:
+                rendered = await self.fetcher.render(url)
+                hits = self._parse(rendered, mirror, limit)
+                if hits:
+                    return hits
+            except Exception as e:
+                log.debug("annas mirror %s render failed: %s", mirror, e)
+
+            if html is not None:
+                log.debug("annas mirror %s returned 0 hits (likely anti-scrape page)", mirror)
 
         if last_err is not None:
             raise last_err
@@ -154,6 +166,8 @@ class AnnasArchiveSearcher(Searcher):
             meta_lines = self._extract_meta_lines(container, exclude=title)
             year = self._extract_year(meta_lines)
             authors = self._extract_authors(meta_lines)
+            doi = self._extract_doi(meta_lines)
+            isbn = self._extract_isbn(meta_lines)
 
             score = max(0.05, 0.9 - i * 0.04)
             out.append(
@@ -162,6 +176,8 @@ class AnnasArchiveSearcher(Searcher):
                     title=title,
                     authors=authors,
                     year=year,
+                    doi=doi,
+                    isbn=isbn,
                     url=urljoin(base + "/", href),
                     score=score,
                     extra={
@@ -210,6 +226,12 @@ class AnnasArchiveSearcher(Searcher):
                 if tail and not re.search(r"\d{4}", tail) and len(tail) < 200:
                     authors = [tail]
 
+            # Extract DOI/ISBN from meta_text
+            doi_match = re.search(r"10\.\d{4,}/[^\s<>\"']+", meta_text)
+            doi = normalize_doi(doi_match.group(0)) if doi_match else None
+            isbn_match = re.search(r"(?:ISBN(?:-?13)?:?\s*)?(?:97[89][- ]?)?\d{9}[\dX]", meta_text, re.I)
+            isbn = normalize_isbn(isbn_match.group(0)) if isbn_match else None
+
             score = max(0.05, 0.9 - i * 0.04)
             out.append(
                 SearchHit(
@@ -217,6 +239,8 @@ class AnnasArchiveSearcher(Searcher):
                     title=title,
                     authors=authors,
                     year=year,
+                    doi=doi,
+                    isbn=isbn,
                     url=urljoin(base + "/", href),
                     score=score,
                     extra={"md5": md5, "meta": meta_text[:300], "mirror": base},
@@ -330,3 +354,27 @@ class AnnasArchiveSearcher(Searcher):
             and len(p) < 120
         ]
         return cleaned[:8]
+
+    @staticmethod
+    def _extract_doi(lines: list[str]) -> str | None:
+        """Extract DOI from metadata lines."""
+        doi_pattern = re.compile(r"10\.\d{4,}/[^\s<>\"']+")
+        for line in lines:
+            match = doi_pattern.search(line)
+            if match:
+                doi = normalize_doi(match.group(0))
+                if doi:
+                    return doi
+        return None
+
+    @staticmethod
+    def _extract_isbn(lines: list[str]) -> str | None:
+        """Extract ISBN from metadata lines."""
+        isbn_pattern = re.compile(r"(?:ISBN(?:-?13)?:?\s*)?(?:97[89][- ]?)?\d{9}[\dX]", re.I)
+        for line in lines:
+            match = isbn_pattern.search(line)
+            if match:
+                isbn = normalize_isbn(match.group(0))
+                if isbn:
+                    return isbn
+        return None

@@ -20,6 +20,7 @@ from rich.progress import (
 
 from documentcrawler.config import Config
 from documentcrawler.db import Database
+from documentcrawler.errors import AcquisitionError, SourceError
 from documentcrawler.fetcher import Fetcher
 from documentcrawler.metadata import MetadataEnricher
 from documentcrawler.models import (
@@ -28,6 +29,7 @@ from documentcrawler.models import (
     DocStatus,
     DocumentQuery,
     DocumentRow,
+    ErrorKind,
 )
 from documentcrawler.sources import build_source
 from documentcrawler.sources.base import Source, SourceContext
@@ -66,12 +68,16 @@ class Pipeline:
         workers: int = 4,
         progress_cb: ProgressCallback | None = None,
         cancel_event: asyncio.Event | None = None,
+        per_doc_timeout_s: float | None = None,
+        dry_run: bool = False,
     ):
         self.config = config
         self.db = db
         self.workers = workers
         self.progress_cb = progress_cb
         self.cancel_event = cancel_event
+        self.per_doc_timeout_s = per_doc_timeout_s
+        self.dry_run = dry_run
 
         if legit_only:
             sources_override = ["open_access", "arxiv", "pubmed", "doaj"]
@@ -134,9 +140,13 @@ class Pipeline:
                         if self.cancel_event is not None and self.cancel_event.is_set():
                             return
                         self._emit("doc_start", {"id": doc.id, "title": doc.title,
-                                                 "doi": doc.doi})
+                                                  "doi": doc.doi})
                         try:
                             ok, used_source = await self._process_one(doc, fetcher, enricher)
+                        except asyncio.CancelledError:
+                            self.db.set_status(doc.id, DocStatus.FAILED,
+                                               error="pipeline: cancelled")
+                            ok, used_source = False, None
                         except Exception as e:
                             log.exception("Pipeline error on doc %d: %s", doc.id, e)
                             ok, used_source = False, None
@@ -161,7 +171,9 @@ class Pipeline:
                         if isinstance(progress, Progress) and task_id is not None:
                             progress.advance(task_id)
 
-                await asyncio.gather(*(worker(doc) for doc in docs))
+                await asyncio.gather(
+                    *(worker(doc) for doc in docs), return_exceptions=True
+                )
 
         self._emit("run_done", {
             "total": summary.total,
@@ -212,81 +224,138 @@ class Pipeline:
             isbn=doc.isbn, keywords=doc.keywords, extra=dict(doc.extra), url=doc.url,
         )
 
-        try:
-            metadata = await enricher.enrich(query)
-        except Exception as e:
-            log.warning("Metadata enrichment failed for #%d: %s", doc.id, e)
-            metadata = await self._fallback_metadata(query, fetcher, enricher)
-
-        self.db.update_metadata(
-            doc.id,
-            doi=metadata.doi,
-            title=metadata.title,
-            authors=metadata.authors or None,
-            year=metadata.year,
-            isbn=metadata.isbn,
-            url=metadata.url,
-            enriched={
-                "oa_urls": metadata.oa_urls,
-                "pmid": metadata.pmid,
-                "pmcid": metadata.pmcid,
-                "journal": metadata.journal,
-                "publisher": metadata.publisher,
-            },
-        )
-        # Refresh in-memory copy with whatever Crossref filled in.
-        doc = self.db.get(doc.id) or doc
-
-        last_error: str | None = None
-        for source in self._source_instances:
-            cfg = self.config.source(source.name)
-            ctx = SourceContext(query=query, metadata=metadata, fetcher=fetcher,
-                                options=cfg.options)
-            candidates: list[Candidate] = []
+        async def _inner() -> tuple[bool, str | None]:
+            nonlocal doc
             try:
-                candidates = await source.search(ctx)
+                metadata = await enricher.enrich(query)
             except Exception as e:
-                log.debug("source %s search error: %s", source.name, e)
-                self._log_failure(doc.id, source.name, None, f"search: {e}")
-                last_error = f"{source.name}: search failed"
-                continue
+                log.warning("Metadata enrichment failed for #%d: %s", doc.id, e)
+                metadata = await self._fallback_metadata(query, fetcher, enricher)
 
-            if not candidates:
-                continue
+            self.db.update_metadata(
+                doc.id,
+                doi=metadata.doi,
+                title=metadata.title,
+                authors=metadata.authors or None,
+                year=metadata.year,
+                isbn=metadata.isbn,
+                url=metadata.url,
+                enriched={
+                    "oa_urls": metadata.oa_urls,
+                    "pmid": metadata.pmid,
+                    "pmcid": metadata.pmcid,
+                    "journal": metadata.journal,
+                    "publisher": metadata.publisher,
+                },
+            )
+            doc = self.db.get(doc.id) or doc
 
-            for candidate in candidates:
-                started = _utcnow()
+            last_error: str | None = None
+            for source in self._source_instances:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    return False, None
+
+                cfg = self.config.source(source.name)
+                ctx = SourceContext(query=query, metadata=metadata, fetcher=fetcher,
+                                    options=cfg.options)
+                candidates: list[Candidate] = []
                 try:
-                    data = await source.fetch(candidate, ctx)
+                    candidates = await source.search(ctx)
                 except Exception as e:
-                    self._log_failure(doc.id, source.name, candidate.url, f"fetch: {e}",
-                                      started_at=started)
-                    last_error = f"{source.name}: {e}"
+                    log.debug("source %s search error: %s", source.name, e)
+                    self._log_failure(doc.id, source.name, None,
+                                      f"search: {e}", error_kind=ErrorKind.TRANSIENT.value)
+                    last_error = f"{source.name}: search failed"
                     continue
 
-                if not data:
-                    self._log_failure(doc.id, source.name, candidate.url, "empty response",
-                                      started_at=started)
+                if not candidates:
                     continue
 
-                try:
-                    verify_pdf(data, min_bytes=self.config.general.min_pdf_bytes)
-                except InvalidPDFError as e:
-                    self._log_failure(doc.id, source.name, candidate.url, f"verify: {e}",
-                                      started_at=started, bytes_=len(data))
-                    last_error = f"{source.name}: not a pdf"
+                if self.dry_run:
+                    urls = [c.url for c in candidates[:3]]
+                    log.info(
+                        "dry-run doc #%d: source %s found %d candidate(s): %s",
+                        doc.id, source.name, len(candidates), urls,
+                    )
+                    self._log_failure(doc.id, source.name,
+                                      candidates[0].url if candidates else None,
+                                      f"dry-run: would download from {source.name} "
+                                      f"({len(candidates)} candidate(s))",
+                                      error_kind=ErrorKind.TRANSIENT.value)
                     continue
 
-                sha = sha256_of(data)
-                existing = self.db.find_by_sha256(sha)
-                if existing and existing.id != doc.id and existing.file_path:
-                    # Already have this exact bytes elsewhere; mark as done.
+                for candidate in candidates:
+                    if self.cancel_event is not None and self.cancel_event.is_set():
+                        return False, None
+
+                    started = _utcnow()
+                    try:
+                        data = await source.fetch(candidate, ctx)
+                    except Exception as e:
+                        self._log_failure(doc.id, source.name, candidate.url,
+                                          f"fetch: {e}", started_at=started,
+                                          error_kind=ErrorKind.TRANSIENT.value)
+                        last_error = f"{source.name}: {e}"
+                        continue
+
+                    if not data:
+                        self._log_failure(doc.id, source.name, candidate.url,
+                                          "empty response", started_at=started,
+                                          error_kind=ErrorKind.TRANSIENT.value)
+                        continue
+
+                    try:
+                        verify_pdf(data, min_bytes=self.config.general.min_pdf_bytes)
+                    except InvalidPDFError as e:
+                        self._log_failure(doc.id, source.name, candidate.url,
+                                          f"verify: {e}", started_at=started,
+                                          bytes_=len(data), error_kind=ErrorKind.PERMANENT.value)
+                        last_error = f"{source.name}: not a pdf"
+                        continue
+
+                    sha = sha256_of(data)
+                    existing = self.db.find_by_sha256(sha)
+                    if existing and existing.id != doc.id and existing.file_path:
+                        self.db.set_status(
+                            doc.id,
+                            DocStatus.DONE,
+                            file_path=existing.file_path,
+                            sha256=sha,
+                            error=None,
+                        )
+                        self.db.log_attempt(
+                            doc.id,
+                            AttemptResult(
+                                source=source.name,
+                                success=True,
+                                candidate_url=candidate.url,
+                                bytes=len(data),
+                                started_at=started,
+                                finished_at=_utcnow(),
+                            ),
+                        )
+                        return True, source.name
+
+                    dest = render_destination(
+                        self.config.general.download_dir,
+                        doc,
+                        filename_template=self.config.general.filename_template,
+                        folder_template=self.config.general.folder_template,
+                        ext="pdf",
+                    )
+                    dest = disambiguate(dest)
+                    try:
+                        atomic_write(dest, data)
+                    except OSError as e:
+                        self._log_failure(doc.id, source.name, candidate.url,
+                                          f"write: {e}", started_at=started,
+                                          bytes_=len(data), error_kind=ErrorKind.PERMANENT.value)
+                        last_error = f"{source.name}: write error"
+                        continue
+
                     self.db.set_status(
-                        doc.id,
-                        DocStatus.DONE,
-                        file_path=existing.file_path,
-                        sha256=sha,
-                        error=None,
+                        doc.id, DocStatus.DONE, file_path=str(dest), sha256=sha,
+                        error=None
                     )
                     self.db.log_attempt(
                         doc.id,
@@ -301,40 +370,34 @@ class Pipeline:
                     )
                     return True, source.name
 
-                dest = render_destination(
-                    self.config.general.download_dir,
-                    doc,
-                    filename_template=self.config.general.filename_template,
-                    folder_template=self.config.general.folder_template,
-                    ext="pdf",
-                )
-                dest = disambiguate(dest)
-                try:
-                    atomic_write(dest, data)
-                except OSError as e:
-                    self._log_failure(doc.id, source.name, candidate.url, f"write: {e}",
-                                      started_at=started, bytes_=len(data))
-                    last_error = f"{source.name}: write error"
-                    continue
+            if self.dry_run:
+                self.db.set_status(doc.id, DocStatus.PENDING, error=None)
+            else:
+                self.db.set_status(doc.id, DocStatus.FAILED,
+                                   error=last_error or "no source produced a PDF")
+            return False, None
 
+        if self.per_doc_timeout_s is not None and self.per_doc_timeout_s > 0:
+            try:
+                return await asyncio.wait_for(_inner(), timeout=self.per_doc_timeout_s)
+            except asyncio.TimeoutError:
                 self.db.set_status(
-                    doc.id, DocStatus.DONE, file_path=str(dest), sha256=sha, error=None
+                    doc.id, DocStatus.FAILED,
+                    error=f"pipeline: timeout after {self.per_doc_timeout_s:.0f}s"
                 )
-                self.db.log_attempt(
-                    doc.id,
-                    AttemptResult(
-                        source=source.name,
-                        success=True,
-                        candidate_url=candidate.url,
-                        bytes=len(data),
-                        started_at=started,
-                        finished_at=_utcnow(),
-                    ),
-                )
-                return True, source.name
-
-        self.db.set_status(doc.id, DocStatus.FAILED, error=last_error or "no source produced a PDF")
-        return False, None
+                self._log_failure(doc.id, "pipeline", None,
+                                  f"timeout after {self.per_doc_timeout_s:.0f}s",
+                                  error_kind=ErrorKind.TRANSIENT.value)
+                return False, None
+            except asyncio.CancelledError:
+                self.db.set_status(doc.id, DocStatus.FAILED, error="pipeline: cancelled")
+                raise
+        else:
+            try:
+                return await _inner()
+            except asyncio.CancelledError:
+                self.db.set_status(doc.id, DocStatus.FAILED, error="pipeline: cancelled")
+                raise
 
     async def _fallback_metadata(self, query: DocumentQuery, fetcher: Fetcher,
                                  enricher: MetadataEnricher):
@@ -354,6 +417,7 @@ class Pipeline:
         *,
         started_at: datetime | None = None,
         bytes_: int | None = None,
+        error_kind: str | None = None,
     ) -> None:
         now = _utcnow()
         self.db.log_attempt(
@@ -364,6 +428,7 @@ class Pipeline:
                 candidate_url=url,
                 bytes=bytes_,
                 error=error[:500],
+                error_kind=error_kind,
                 started_at=started_at or now,
                 finished_at=now,
             ),

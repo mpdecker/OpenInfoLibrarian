@@ -72,6 +72,8 @@ class LibgenSearcher(Searcher):
         last_err: Exception | None = None
         for mirror in mirrors:
             mirror = mirror.rstrip("/")
+            html: str | None = None
+            hits: list[SearchHit] = []
             try:
                 if doi:
                     url = f"{mirror}/scimag/?q={quote(doi)}"
@@ -85,8 +87,6 @@ class LibgenSearcher(Searcher):
                     )
                     hits = self._parse_scimag(html, mirror, limit)
                 else:
-                    # libgen.li renames the param to `req` *or* `q` on the
-                    # /index.php endpoint; both are accepted server-side.
                     url = f"{mirror}/index.php?req={quote(isbn or query)}&res=25"
                     html = await asyncio.wait_for(
                         self.fetcher.probe_text(
@@ -100,13 +100,25 @@ class LibgenSearcher(Searcher):
             except TimeoutError:
                 last_err = TimeoutError(f"{mirror} did not respond in {_PER_MIRROR_TIMEOUT_S:.0f}s")
                 log.debug("libgen mirror %s timed out", mirror)
-                continue
             except Exception as e:  # noqa: BLE001
                 last_err = e
                 log.debug("libgen mirror %s failed: %s", mirror, e)
-                continue
-            if hits:
+
+            if html is not None and hits:
                 return hits
+
+            # Render fallback for JS-gated/Cloudflare mirrors
+            if not hits:
+                try:
+                    rendered = await self.fetcher.render(url)
+                    if doi:
+                        hits = self._parse_scimag(rendered, mirror, limit)
+                    else:
+                        hits = self._parse_books(rendered, mirror, limit)
+                    if hits:
+                        return hits
+                except Exception as e:
+                    log.debug("libgen mirror %s render failed: %s", mirror, e)
 
         if last_err is not None:
             # Re-raise so MultiSearcher can surface the failure in the

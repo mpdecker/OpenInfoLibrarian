@@ -91,8 +91,21 @@ ALL_SEARCHERS: list[tuple[str, str, bool]] = [
     ("crossref", "Crossref", False),
     ("openalex", "OpenAlex", False),
     ("arxiv", "arXiv", False),
+    ("core", "CORE (OA)", False),
     ("openlibrary", "Open Library", False),
     ("semantic_scholar", "Semantic Scholar", False),
+    # Metadata-only searchers (paywalled sites / archives)
+    ("doi_org", "DOI.org", False),
+    ("elsevier", "Elsevier", False),
+    ("springer", "Springer", False),
+    ("wiley", "Wiley", False),
+    ("ieee", "IEEE Xplore", False),
+    ("jstor", "JSTOR", False),
+    ("library_of_congress", "Library of Congress", False),
+    ("uk_national_archives", "UK National Archives", False),
+    ("europeana", "Europeana", False),
+    # Shadow sources
+    ("scihub", "Sci-Hub", True),
     ("annas_archive", "Anna's Archive", True),
     ("libgen", "LibGen", True),
     ("zlibrary", "Z-Library", True),
@@ -274,6 +287,7 @@ def _searcher_options_from_cfg(cfg: Config) -> dict[str, dict[str, Any]]:
     cr = (cfg.metadata or {}).get("crossref") or {}
     if cr.get("mailto"):
         out["crossref"] = {"mailto": cr["mailto"]}
+        out["doi_org"] = {"mailto": cr["mailto"]}
     oa = (cfg.metadata or {}).get("openalex") or {}
     if oa.get("mailto"):
         out["openalex"] = {"mailto": oa["mailto"]}
@@ -294,6 +308,35 @@ def _searcher_options_from_cfg(cfg: Config) -> dict[str, dict[str, Any]]:
     zlib = cfg.source("zlibrary").options or {}
     if zlib.get("mirrors"):
         out["zlibrary"] = {"mirrors": zlib["mirrors"]}
+    # Sci-Hub mirrors (used by both searcher and source)
+    scihub = cfg.source("scihub").options or {}
+    if scihub.get("mirrors"):
+        out["scihub"] = {"mirrors": scihub["mirrors"]}
+    # New metadata-only searchers API keys
+    # CORE API key (OA aggregator)
+    core_key = (cfg.metadata or {}).get("core", {}).get("api_key")
+    if core_key:
+        out["core"] = {"api_key": core_key}
+    if cr.get("mailto"):
+        out["wiley"] = {"mailto": cr["mailto"]}
+    else:
+        out["wiley"] = {}
+    # Elsevier API key
+    elsevier_key = (cfg.metadata or {}).get("elsevier", {}).get("api_key")
+    if elsevier_key:
+        out["elsevier"] = {"api_key": elsevier_key}
+    # Springer API key
+    springer_key = (cfg.metadata or {}).get("springer", {}).get("api_key")
+    if springer_key:
+        out["springer"] = {"api_key": springer_key}
+    # IEEE API key
+    ieee_key = (cfg.metadata or {}).get("ieee", {}).get("api_key")
+    if ieee_key:
+        out["ieee"] = {"api_key": ieee_key}
+    # Europeana API key
+    europeana_key = (cfg.metadata or {}).get("europeana", {}).get("api_key")
+    if europeana_key:
+        out["europeana"] = {"api_key": europeana_key}
     return out
 
 
@@ -428,17 +471,33 @@ class SettingsDialog(tk.Toplevel):
         crossref = (self.cfg.metadata.get("crossref") or {}).get("mailto", "")
         openalex = (self.cfg.metadata.get("openalex") or {}).get("mailto", "")
         sschol = (self.cfg.metadata.get("semantic_scholar") or {}).get("api_key", "")
+        # New searcher API keys
+        core_key = (self.cfg.metadata.get("core") or {}).get("api_key", "")
+        elsevier_key = (self.cfg.metadata.get("elsevier") or {}).get("api_key", "")
+        springer_key = (self.cfg.metadata.get("springer") or {}).get("api_key", "")
+        ieee_key = (self.cfg.metadata.get("ieee") or {}).get("api_key", "")
+        europeana_key = (self.cfg.metadata.get("europeana") or {}).get("api_key", "")
 
         self.var_unpaywall = tk.StringVar(value=unpaywall)
         self.var_crossref = tk.StringVar(value=crossref)
         self.var_openalex = tk.StringVar(value=openalex)
         self.var_sschol = tk.StringVar(value=sschol)
+        self.var_core = tk.StringVar(value=core_key)
+        self.var_elsevier = tk.StringVar(value=elsevier_key)
+        self.var_springer = tk.StringVar(value=springer_key)
+        self.var_ieee = tk.StringVar(value=ieee_key)
+        self.var_europeana = tk.StringVar(value=europeana_key)
 
         rows = [
             ("Unpaywall email (required by their TOS)", self.var_unpaywall),
             ("Crossref mailto (polite pool)", self.var_crossref),
             ("OpenAlex mailto (polite pool)", self.var_openalex),
             ("Semantic Scholar API key (optional)", self.var_sschol),
+            ("CORE API key (OA aggregator)", self.var_core),
+            ("Elsevier API key (ScienceDirect)", self.var_elsevier),
+            ("Springer API key", self.var_springer),
+            ("IEEE Xplore API key", self.var_ieee),
+            ("Europeana API key", self.var_europeana),
         ]
         for i, (label, var) in enumerate(rows):
             ttk.Label(f, text=label).grid(row=i, column=0, sticky="w", padx=2, pady=6)
@@ -447,7 +506,8 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Label(f, text=(
             "All fields are optional but recommended. They let APIs identify your\n"
-            "client and route you to a higher-priority pool."
+            "client and route you to a higher-priority pool.\n"
+            "Crossref mailto is also used for DOI.org and Wiley search."
         ), foreground="#444").grid(row=len(rows), column=0, columnspan=2,
                                   sticky="w", pady=8)
 
@@ -519,6 +579,12 @@ class SettingsDialog(tk.Toplevel):
         _set_meta("crossref", "mailto", self.var_crossref.get())
         _set_meta("openalex", "mailto", self.var_openalex.get())
         _set_meta("semantic_scholar", "api_key", self.var_sschol.get())
+        # New searcher API keys
+        _set_meta("core", "api_key", self.var_core.get())
+        _set_meta("elsevier", "api_key", self.var_elsevier.get())
+        _set_meta("springer", "api_key", self.var_springer.get())
+        _set_meta("ieee", "api_key", self.var_ieee.get())
+        _set_meta("europeana", "api_key", self.var_europeana.get())
 
         try:
             write_config(cfg, self.parent.config_path)
@@ -703,6 +769,146 @@ class EditDocDialog(tk.Toplevel):
 
 
 # -----------------------------------------------------------------------------
+# Autocomplete Entry Widget
+# -----------------------------------------------------------------------------
+
+
+class AutocompleteEntry(ttk.Frame):
+    """Entry widget with autocomplete dropdown from database suggestions."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        textvariable: tk.StringVar,
+        db: Database,
+        width: int = 70,
+        **kwargs,
+    ):
+        super().__init__(parent, **kwargs)
+        self.db = db
+        self._textvariable = textvariable
+        self._debounce_id: str | None = None
+        self._debounce_ms = 300
+
+        self.entry = ttk.Entry(self, textvariable=textvariable, width=width)
+        self.entry.pack(fill="x", expand=True)
+        self.entry.bind("<KeyRelease>", self._on_keyrelease)
+        self.entry.bind("<FocusOut>", lambda _e: self._hide_listbox())
+        self.entry.bind("<Down>", self._on_down)
+        self.entry.bind("<Up>", self._on_up)
+        self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<Escape>", lambda _e: self._hide_listbox())
+
+        # Popup listbox for suggestions
+        self._listbox: tk.Listbox | None = None
+        self._suggestions: list[str] = []
+
+    def focus(self) -> None:
+        self.entry.focus_set()
+
+    def _on_keyrelease(self, event: tk.Event) -> None:
+        # Ignore navigation keys
+        if event.keysym in ("Down", "Up", "Return", "Escape", "Tab", "Shift_L", "Shift_R"):
+            return
+        if self._debounce_id:
+            self.after_cancel(self._debounce_id)
+        self._debounce_id = self.after(self._debounce_ms, self._fetch_suggestions)
+
+    def _fetch_suggestions(self) -> None:
+        prefix = self._textvariable.get().strip()
+        if len(prefix) < 2:
+            self._hide_listbox()
+            return
+        try:
+            suggestions = self.db.get_autocomplete_suggestions(prefix, limit=10)
+        except Exception:
+            suggestions = []
+        if suggestions:
+            self._show_listbox(suggestions)
+        else:
+            self._hide_listbox()
+
+    def _show_listbox(self, suggestions: list[str]) -> None:
+        self._suggestions = suggestions
+        if self._listbox is None:
+            self._listbox = tk.Listbox(
+                self.winfo_toplevel(),
+                height=min(len(suggestions), 10),
+                width=self.entry.winfo_width(),
+                font=("TkDefaultFont", 10),
+                takefocus=0,
+            )
+            self._listbox.bind("<Button-1>", self._on_listbox_select)
+            self._listbox.bind("<Return>", self._on_listbox_select)
+        else:
+            self._listbox.delete(0, tk.END)
+            self._listbox.configure(height=min(len(suggestions), 10))
+
+        for s in suggestions:
+            self._listbox.insert(tk.END, s)
+
+        # Position below entry
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height()
+        self._listbox.place(x=x, y=y, width=self.entry.winfo_width())
+        self._listbox.lift()
+
+    def _hide_listbox(self) -> None:
+        if self._listbox:
+            self._listbox.place_forget()
+            self._listbox = None
+        self._suggestions = []
+
+    def _on_down(self, _event: tk.Event) -> str:
+        if self._listbox and self._suggestions:
+            sel = self._listbox.curselection()
+            if sel:
+                idx = sel[0] + 1
+            else:
+                idx = 0
+            if idx < self._listbox.size():
+                self._listbox.selection_clear(0, tk.END)
+                self._listbox.selection_set(idx)
+                self._listbox.activate(idx)
+            return "break"
+        return ""
+
+    def _on_up(self, _event: tk.Event) -> str:
+        if self._listbox and self._suggestions:
+            sel = self._listbox.curselection()
+            if sel:
+                idx = sel[0] - 1
+            else:
+                idx = self._listbox.size() - 1
+            if idx >= 0:
+                self._listbox.selection_clear(0, tk.END)
+                self._listbox.selection_set(idx)
+                self._listbox.activate(idx)
+            return "break"
+        return ""
+
+    def _on_return(self, _event: tk.Event) -> str:
+        if self._listbox and self._suggestions:
+            sel = self._listbox.curselection()
+            if sel:
+                self._select_suggestion(sel[0])
+                return "break"
+        return ""
+
+    def _on_listbox_select(self, _event: tk.Event) -> None:
+        sel = self._listbox.curselection() if self._listbox else ()
+        if sel:
+            self._select_suggestion(sel[0])
+
+    def _select_suggestion(self, index: int) -> None:
+        if 0 <= index < len(self._suggestions):
+            self._textvariable.set(self._suggestions[index])
+        self._hide_listbox()
+        self.entry.icursor(tk.END)
+        self.entry.focus_set()
+
+
+# -----------------------------------------------------------------------------
 # Search dialog
 # -----------------------------------------------------------------------------
 
@@ -715,26 +921,50 @@ class SearchDialog(tk.Toplevel):
         self.parent = parent
         self.title("Search sources")
         self.transient(parent.root)
-        self.geometry("1080x680")
+        self.geometry("1150x780")
+
+        # Database for saved searches and autocomplete
+        self.db = Database(parent.cfg.general.db_path)
 
         # Hits keyed by tree iid -> SearchHit
         self.hits: dict[str, SearchHit] = {}
         self.normalized_hits: dict[str, NormalizedSearchHit] = {}
         self.worker = SearchWorker(parent.cfg)
 
+        # Filter state
+        self._filtered_hits: list[SearchHit] = []
+        self._all_hits: list[SearchHit] = []
+
         self._build()
         self._poll()
+        self._load_saved_searches()
 
     def _build(self) -> None:
-        top = ttk.Frame(self, padding=(10, 10, 10, 4))
+        # Saved searches row
+        saved_frame = ttk.LabelFrame(self, text="Saved Searches", padding=(8, 4))
+        saved_frame.pack(fill="x", padx=10, pady=(8, 4))
+
+        ttk.Label(saved_frame, text="Load:").pack(side="left", padx=(0, 4))
+        self.saved_search_var = tk.StringVar()
+        self.saved_search_combo = ttk.Combobox(
+            saved_frame, textvariable=self.saved_search_var, state="readonly", width=35
+        )
+        self.saved_search_combo.pack(side="left", padx=4)
+        self.saved_search_combo.bind("<<ComboboxSelected>>", self._on_saved_search_select)
+
+        ttk.Button(saved_frame, text="Save Current", command=self._save_current_search).pack(side="left", padx=4)
+        ttk.Button(saved_frame, text="Delete", command=self._delete_saved_search).pack(side="left", padx=4)
+
+        # Query row
+        top = ttk.Frame(self, padding=(10, 6, 10, 4))
         top.pack(fill="x")
 
         ttk.Label(top, text="Query:").grid(row=0, column=0, sticky="w")
         self.var_query = tk.StringVar()
-        entry = ttk.Entry(top, textvariable=self.var_query, width=70)
-        entry.grid(row=0, column=1, padx=4, sticky="ew")
-        entry.bind("<Return>", lambda _e: self._do_search())
-        entry.focus_set()
+        self.autocomplete_entry = AutocompleteEntry(top, self.var_query, self.db, width=70)
+        self.autocomplete_entry.grid(row=0, column=1, padx=4, sticky="ew")
+        self.autocomplete_entry.entry.bind("<Return>", lambda _e: self._do_search())
+        self.autocomplete_entry.focus()
 
         self.var_kind = tk.StringVar(value="auto")
         ttk.Label(top, text="Kind:").grid(row=0, column=2, padx=(10, 2))
@@ -777,6 +1007,37 @@ class SearchDialog(tk.Toplevel):
                    command=lambda: self._set_shadow_searchers(True)).grid(
             row=0, column=col + 1)
 
+        # Filter controls row
+        filter_frame = ttk.LabelFrame(self, text="Filters", padding=(8, 4))
+        filter_frame.pack(fill="x", padx=10, pady=4)
+
+        # Year range
+        ttk.Label(filter_frame, text="Year:").pack(side="left", padx=(0, 4))
+        self.filter_year_from = tk.IntVar(value=0)
+        self.filter_year_to = tk.IntVar(value=0)
+        ttk.Spinbox(filter_frame, from_=0, to=2100, textvariable=self.filter_year_from,
+                    width=6).pack(side="left", padx=2)
+        ttk.Label(filter_frame, text="-").pack(side="left")
+        ttk.Spinbox(filter_frame, from_=0, to=2100, textvariable=self.filter_year_to,
+                    width=6).pack(side="left", padx=2)
+
+        # Availability filter
+        ttk.Label(filter_frame, text="Availability:").pack(side="left", padx=(12, 4))
+        self.filter_availability = tk.StringVar(value="all")
+        ttk.Combobox(
+            filter_frame, textvariable=self.filter_availability, state="readonly",
+            width=15, values=["all", "has_pdf", "has_page", "metadata_only"]
+        ).pack(side="left", padx=2)
+
+        # Has identifier filter
+        self.filter_has_identifier = tk.BooleanVar(value=False)
+        ttk.Checkbutton(filter_frame, text="Has DOI/ISBN",
+                        variable=self.filter_has_identifier).pack(side="left", padx=(12, 4))
+
+        # Apply/Reset buttons
+        ttk.Button(filter_frame, text="Apply", command=self._apply_filters).pack(side="left", padx=(12, 4))
+        ttk.Button(filter_frame, text="Reset", command=self._reset_filters).pack(side="left", padx=4)
+
         # Per-source progress strip
         self.progress_var = tk.StringVar(value="")
         ttk.Label(self, textvariable=self.progress_var, foreground="#445").pack(
@@ -805,6 +1066,8 @@ class SearchDialog(tk.Toplevel):
         xsb.pack(side="bottom", fill="x")
         self.tree.tag_configure("haspdf", foreground="#0a7a0a")
         self.tree.bind("<Double-1>", self._open_url)
+        # Single-click on identifier column to search DOI on Sci-Hub
+        self.tree.bind("<Button-1>", self._on_tree_click)
 
         # Preview pane (abstract)
         preview_frame = ttk.LabelFrame(self, text="Preview", padding=8)
@@ -825,6 +1088,8 @@ class SearchDialog(tk.Toplevel):
         ttk.Button(bar, text="Queue selected",
                    command=self._queue_selected,
                    style="Accent.TButton").pack(side="right", padx=4)
+        ttk.Button(bar, text="Search DOI on Sci-Hub",
+                   command=self._search_doi_on_scihub).pack(side="right", padx=4)
         ttk.Button(bar, text="Open page",
                    command=self._open_page).pack(side="right", padx=4)
         ttk.Button(bar, text="Open URL",
@@ -913,6 +1178,84 @@ class SearchDialog(tk.Toplevel):
         if not hit or not hit.url:
             return
         webbrowser.open(hit.url)
+
+    def _search_doi_on_scihub(self) -> None:
+        """Search selected DOI directly on Sci-Hub."""
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection", "Select a result with a DOI first.", parent=self)
+            return
+
+        hit = self.hits.get(sel[0])
+        if not hit or not hit.doi:
+            messagebox.showinfo("No DOI", "Selected item has no DOI to search.", parent=self)
+            return
+
+        doi = hit.doi
+        self.status_var.set(f"Searching Sci-Hub for DOI: {doi}...")
+
+        # Run Sci-Hub search in background
+        import threading
+        def search():
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                from documentcrawler.searcher.scihub_search import ScihubSearcher
+                from documentcrawler.fetcher import Fetcher
+
+                async def do_search():
+                    async with Fetcher(
+                        self.parent.cfg.fetcher,
+                        timeout_s=self.parent.cfg.general.request_timeout_s,
+                        max_retries=self.parent.cfg.general.max_retries,
+                    ) as fetcher:
+                        searcher = ScihubSearcher(fetcher)
+                        hits = await searcher.search(doi, limit=1, kind="doi")
+                        return hits
+
+                hits = loop.run_until_complete(do_search())
+                if hits and hits[0].pdf_url:
+                    self.after(0, lambda: webbrowser.open(hits[0].pdf_url))
+                    self.after(0, lambda: self.status_var.set(f"Found PDF on Sci-Hub: {doi}"))
+                else:
+                    self.after(0, lambda: self.status_var.set(f"No PDF found on Sci-Hub for: {doi}"))
+                    self.after(0, lambda: messagebox.showinfo("Not found",
+                        f"No PDF found on Sci-Hub for DOI:\n{doi}", parent=self))
+            except Exception as e:
+                log.exception("Sci-Hub search failed")
+                self.after(0, lambda: self.status_var.set(f"Sci-Hub search failed: {e}"))
+            finally:
+                loop.close()
+
+        threading.Thread(target=search, daemon=True).start()
+
+    def _on_tree_click(self, event: tk.Event) -> None:
+        """Handle click on treeview - check if identifier column was clicked for DOI search."""
+        # Identify the region and column
+        region = self.tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return
+
+        col = self.tree.identify_column(event.x)
+        # identifier column is #5 (0-indexed: title=1, authors=2, year=3, venue=4, identifier=5)
+        if col != "#5":
+            return
+
+        # Get the item and check if it has a DOI
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+
+        hit = self.hits.get(iid)
+        if not hit or not hit.doi:
+            return
+
+        # Ask if user wants to search this DOI
+        if messagebox.askyesno("Search DOI", f"Search for DOI on Sci-Hub?\n\n{hit.doi}", parent=self):
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
+            self._search_doi_on_scihub()
 
     def _queue_selected(self) -> None:
         sel = self.tree.selection()
@@ -1019,6 +1362,50 @@ class SearchDialog(tk.Toplevel):
             self.status_var.set("Error: " + str(payload.get("msg")))
 
     def _populate(self, hits: list[SearchHit]) -> None:
+        self._all_hits = hits
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        """Apply UI filters to the merged results."""
+        hits = list(self._all_hits)
+
+        # Year filter
+        year_from = self.filter_year_from.get()
+        year_to = self.filter_year_to.get()
+        if year_from > 0 or year_to > 0:
+            if year_from == 0:
+                year_from = 0
+            if year_to == 0:
+                year_to = 9999
+            hits = [h for h in hits if h.year and year_from <= h.year <= year_to]
+
+        # Availability filter
+        availability = self.filter_availability.get()
+        if availability == "has_pdf":
+            hits = [h for h in hits if h.pdf_url]
+        elif availability == "has_page":
+            hits = [h for h in hits if h.url]
+        elif availability == "metadata_only":
+            hits = [h for h in hits if not h.url and not h.pdf_url]
+
+        # Has identifier filter
+        if self.filter_has_identifier.get():
+            hits = [h for h in hits if h.doi or h.isbn]
+
+        self._filtered_hits = hits
+        self._render_hits(hits)
+        self.status_var.set(f"Showing {len(hits)} of {len(self._all_hits)} results")
+
+    def _reset_filters(self) -> None:
+        """Reset all filters to defaults."""
+        self.filter_year_from.set(0)
+        self.filter_year_to.set(0)
+        self.filter_availability.set("all")
+        self.filter_has_identifier.set(False)
+        self._apply_filters()
+
+    def _render_hits(self, hits: list[SearchHit]) -> None:
+        """Render hits to the treeview."""
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self.hits.clear()
@@ -1042,6 +1429,105 @@ class SearchDialog(tk.Toplevel):
             )
             self.hits[iid] = h
             self.normalized_hits[iid] = normalized
+
+    # -------------------------------------------------------------------------
+    # Saved searches
+    # -------------------------------------------------------------------------
+
+    def _load_saved_searches(self) -> None:
+        """Load saved searches into the dropdown."""
+        try:
+            searches = self.db.list_saved_searches(limit=50)
+            self._saved_searches_map: dict[str, int] = {}
+            values = []
+            for s in searches:
+                display = f"{s.name} ({s.query_text[:30]}...)"
+                values.append(display)
+                self._saved_searches_map[display] = s.id
+            self.saved_search_combo.configure(values=values)
+        except Exception as e:
+            log.debug("Failed to load saved searches: %s", e)
+
+    def _on_saved_search_select(self, _event: tk.Event | None = None) -> None:
+        """Load a saved search when selected from dropdown."""
+        display = self.saved_search_var.get()
+        if not display:
+            return
+        search_id = self._saved_searches_map.get(display)
+        if search_id is None:
+            return
+        saved = self.db.get_saved_search(search_id)
+        if saved is None:
+            return
+        # Populate UI from saved search
+        self.var_query.set(saved.query_text)
+        self.var_kind.set(saved.kind)
+        self.var_limit.set(saved.limit_per_source)
+        # Set source checkboxes
+        for name, var in self.searcher_vars.items():
+            var.set(name in saved.sources)
+        self.status_var.set(f"Loaded saved search: {saved.name}")
+
+    def _save_current_search(self) -> None:
+        """Save the current search configuration."""
+        query = self.var_query.get().strip()
+        if not query:
+            messagebox.showwarning("Empty query", "Enter a search query to save.", parent=self)
+            return
+
+        # Ask for name
+        from tkinter import simpledialog
+        name = simpledialog.askstring("Save Search", "Name for this saved search:", parent=self)
+        if not name:
+            return
+
+        sources = [n for n, v in self.searcher_vars.items() if v.get()]
+        try:
+            self.db.save_search(
+                name=name,
+                query_text=query,
+                kind=self.var_kind.get(),
+                sources=sources,
+                limit_per_source=self.var_limit.get(),
+            )
+            self._load_saved_searches()
+            self.status_var.set(f"Saved search: {name}")
+        except Exception as e:
+            messagebox.showerror("Save failed", f"Could not save search: {e}", parent=self)
+
+    def _delete_saved_search(self) -> None:
+        """Delete the selected saved search."""
+        display = self.saved_search_var.get()
+        if not display:
+            messagebox.showwarning("No selection", "Select a saved search to delete.", parent=self)
+            return
+        search_id = self._saved_searches_map.get(display)
+        if search_id is None:
+            return
+
+        if not messagebox.askyesno("Confirm", "Delete this saved search?", parent=self):
+            return
+
+        try:
+            self.db.delete_saved_search(search_id)
+            self.saved_search_var.set("")
+            self._load_saved_searches()
+            self.status_var.set("Deleted saved search")
+        except Exception as e:
+            messagebox.showerror("Delete failed", f"Could not delete: {e}", parent=self)
+
+    def destroy(self) -> None:
+        """Clean up resources when dialog closes."""
+        # Hide autocomplete listbox if open
+        if hasattr(self, "autocomplete_entry"):
+            self.autocomplete_entry._hide_listbox()
+        # Cancel any running search
+        if self.worker.running:
+            self.worker.cancel()
+        # Close database connection
+        if hasattr(self, "db"):
+            self.db.close()
+        super().destroy()
 
 
 def _replace_first(text: str, key: str, replacement: str) -> str:
@@ -1734,12 +2220,12 @@ class App:
         cfg = self.cfg
         db = Database(cfg.general.db_path)
         try:
-            failed = db.list_documents(DocStatus.FAILED)
+            failed = db.pending_or_failed(only_failed=True, retry_permanent=False)
             for r in failed:
                 db.set_status(r.id, DocStatus.PENDING, error=None)
         finally:
             db.close()
-        self.log(f"Reset {len(failed)} failed -> pending")
+        self.log(f"Reset {len(failed)} transient failures -> pending")
         self.refresh_table()
 
     def _delete_selected(self, _event: tk.Event | None = None) -> None:
