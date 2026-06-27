@@ -112,6 +112,16 @@ def _json_object(value: str | None) -> dict[str, Any]:
         return {}
 
 
+def _first_author_surname_for_db(authors: list[str]) -> str:
+    if not authors:
+        return ""
+    name = authors[0].strip()
+    if "," in name:
+        return name.split(",")[0].strip().lower()
+    parts = name.split()
+    return parts[-1].lower() if parts else name.lower()
+
+
 def _safe_int(row: sqlite3.Row, key: str) -> int | None:
     try:
         val = row[key]
@@ -318,6 +328,18 @@ class Database:
             ).fetchone()
             if row:
                 return int(row["id"])
+        if q.title and q.authors:
+            author_surname = _first_author_surname_for_db(q.authors)
+            if author_surname:
+                row = self._conn.execute(
+                    """SELECT d.id FROM documents d, json_each(d.authors)
+                       WHERE LOWER(d.title) = LOWER(?)
+                       AND LOWER(json_each.value) LIKE ?
+                       LIMIT 1""",
+                    (q.title, f"%{author_surname}%"),
+                ).fetchone()
+                if row:
+                    return int(row["id"])
         return None
 
     def get(self, doc_id: int) -> DocumentRow | None:
@@ -464,7 +486,7 @@ class Database:
                     http_status=r["http_status"],
                     bytes=r["bytes"],
                     error=r["error"],
-                    error_kind=r["error_kind"] if "error_kind" in r.keys() else None,
+                    error_kind=r["error_kind"] if "error_kind" in r else None,  # noqa: SIM401
                     started_at=_parse_dt(r["started_at"]),
                     finished_at=_parse_dt(r["finished_at"]),
                 )
