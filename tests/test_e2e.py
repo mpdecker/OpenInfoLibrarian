@@ -16,7 +16,7 @@ def test_init_and_status(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     subprocess.run(
         [sys.executable, "-m", "documentcrawler", "init", "--config", str(config)],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
     assert config.exists()
     db = tmp_path / "crawler.db"
@@ -24,7 +24,7 @@ def test_init_and_status(tmp_path, monkeypatch):
 
     result = subprocess.run(
         [sys.executable, "-m", "documentcrawler", "status", "--config", str(config)],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
     assert "Documents by status" in result.stdout
 
@@ -34,7 +34,7 @@ def test_add_and_run_oa(tmp_path):
     config = tmp_path / "config.toml"
     subprocess.run(
         [sys.executable, "-m", "documentcrawler", "init", "--config", str(config)],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
 
     result = subprocess.run(
@@ -43,7 +43,7 @@ def test_add_and_run_oa(tmp_path):
             "--config", str(config),
             "--doi", "10.1038/s41586-020-2649-2",
         ],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
     assert "queued" in result.stdout.lower()
 
@@ -53,7 +53,7 @@ def test_add_and_run_oa(tmp_path):
             "--config", str(config),
             "--legit-only",
         ],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
         timeout=120,
     )
     assert "succeeded" in result.stdout.lower()
@@ -64,7 +64,7 @@ def test_search_enqueues(tmp_path):
     config = tmp_path / "config.toml"
     subprocess.run(
         [sys.executable, "-m", "documentcrawler", "init", "--config", str(config)],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
 
     result = subprocess.run(
@@ -76,7 +76,7 @@ def test_search_enqueues(tmp_path):
             "--limit", "3",
             "--queue-top", "1",
         ],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
         timeout=60,
     )
     assert "Queued" in result.stdout or "Merged hits" in result.stdout
@@ -88,7 +88,7 @@ def test_import_bibtex(tmp_path):
     subprocess.run(
         [sys.executable, "-m", "documentcrawler", "init",
          "--config", str(config), "--with-examples"],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
 
     bib = tmp_path / "examples" / "refs.bib"
@@ -101,6 +101,6 @@ def test_import_bibtex(tmp_path):
             "--config", str(config),
             str(bib),
         ],
-        capture_output=True, text=True, check=True, cwd=str(tmp_path),
+        capture_output=True, encoding="utf-8", check=True, cwd=str(tmp_path),
     )
     assert "added" in result.stdout.lower()

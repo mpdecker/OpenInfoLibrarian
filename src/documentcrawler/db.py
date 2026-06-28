@@ -21,6 +21,17 @@ from documentcrawler.models import (
     SavedSearchRow,
 )
 
+class _JSONEncoder(json.JSONEncoder):
+    def default(self, o: Any) -> Any:
+        if isinstance(o, set):
+            return sorted(list(o))
+        return super().default(o)
+
+
+def _dumps(obj: Any) -> str:
+    return json.dumps(obj, cls=_JSONEncoder)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -281,7 +292,7 @@ class Database:
                 q.year,
                 q.isbn,
                 json.dumps(q.keywords),
-                json.dumps(q.extra),
+                _dumps(q.extra),
                 q.url,
                 timeout_s,
                 _utcnow_iso(),
@@ -445,7 +456,7 @@ class Database:
                 year,
                 isbn,
                 url,
-                json.dumps(enriched) if enriched is not None else None,
+                _dumps(enriched) if enriched is not None else None,
                 _utcnow_iso(),
                 doc_id,
             ),
@@ -486,7 +497,7 @@ class Database:
                     http_status=r["http_status"],
                     bytes=r["bytes"],
                     error=r["error"],
-                    error_kind=r["error_kind"] if "error_kind" in r else None,  # noqa: SIM401
+                    error_kind=r["error_kind"] if "error_kind" in r.keys() else None,  # noqa: SIM401
                     started_at=_parse_dt(r["started_at"]),
                     finished_at=_parse_dt(r["finished_at"]),
                 )
