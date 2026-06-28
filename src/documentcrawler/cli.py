@@ -652,6 +652,36 @@ def _status_color(s: DocStatus) -> str:
 
 
 def _main():
+    import sys
+    # Preprocess sys.argv to move global options (--config or -c) to the front
+    args = sys.argv[1:]
+    config_indices = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--config" or arg == "-c":
+            config_indices.append((i, True))
+            i += 2
+        elif arg.startswith("--config="):
+            config_indices.append((i, False))
+            i += 1
+        else:
+            i += 1
+    
+    if config_indices:
+        extracted = []
+        for idx, needs_val in reversed(config_indices):
+            if needs_val:
+                if idx + 1 < len(args):
+                    val = args.pop(idx + 1)
+                    name = args.pop(idx)
+                    extracted.insert(0, val)
+                    extracted.insert(0, name)
+            else:
+                val = args.pop(idx)
+                extracted.insert(0, val)
+        sys.argv = [sys.argv[0]] + extracted + args
+
     try:
         app()
     except CLIError as e:
