@@ -4,15 +4,16 @@ on: [push, pull_request]
 
 jobs:
   test:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e .[dev]
+      - run: pip install -e .[full,dev]
       - run: ruff check src tests
-      - run: python -m pytest tests/ -m "not e2e" -p asyncio -p pytest_httpx
+      - run: python -m pytest --basetemp=dist/pytest_tmp -m "not e2e"

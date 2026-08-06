@@ -38,9 +38,9 @@ from documentcrawler.importers import parse_file
 from documentcrawler.models import DocStatus, DocumentQuery, DocumentRow
 from documentcrawler.pipeline import Pipeline
 from documentcrawler.presentation import (
-    copyable_document_url,
     NormalizedDocumentRow,
     NormalizedSearchHit,
+    copyable_document_url,
     normalize_document_row,
     normalize_search_hit,
     preferred_queue_url,
@@ -862,10 +862,7 @@ class AutocompleteEntry(ttk.Frame):
     def _on_down(self, _event: tk.Event) -> str:
         if self._listbox and self._suggestions:
             sel = self._listbox.curselection()
-            if sel:
-                idx = sel[0] + 1
-            else:
-                idx = 0
+            idx = sel[0] + 1 if sel else 0
             if idx < self._listbox.size():
                 self._listbox.selection_clear(0, tk.END)
                 self._listbox.selection_set(idx)
@@ -876,10 +873,7 @@ class AutocompleteEntry(ttk.Frame):
     def _on_up(self, _event: tk.Event) -> str:
         if self._listbox and self._suggestions:
             sel = self._listbox.curselection()
-            if sel:
-                idx = sel[0] - 1
-            else:
-                idx = self._listbox.size() - 1
+            idx = sel[0] - 1 if sel else self._listbox.size() - 1
             if idx >= 0:
                 self._listbox.selection_clear(0, tk.END)
                 self._listbox.selection_set(idx)
@@ -1201,8 +1195,8 @@ class SearchDialog(tk.Toplevel):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                from documentcrawler.searcher.scihub_search import ScihubSearcher
                 from documentcrawler.fetcher import Fetcher
+                from documentcrawler.searcher.scihub_search import ScihubSearcher
 
                 async def do_search():
                     async with Fetcher(
@@ -1222,9 +1216,10 @@ class SearchDialog(tk.Toplevel):
                     self.after(0, lambda: self.status_var.set(f"No PDF found on Sci-Hub for: {doi}"))
                     self.after(0, lambda: messagebox.showinfo("Not found",
                         f"No PDF found on Sci-Hub for DOI:\n{doi}", parent=self))
-            except Exception as e:
+            except Exception as exc:
                 log.exception("Sci-Hub search failed")
-                self.after(0, lambda: self.status_var.set(f"Sci-Hub search failed: {e}"))
+                msg = f"Sci-Hub search failed: {exc}"
+                self.after(0, lambda m=msg: self.status_var.set(m))
             finally:
                 loop.close()
 
@@ -1326,13 +1321,6 @@ class SearchDialog(tk.Toplevel):
             return
         with contextlib.suppress(tk.TclError):
             self.after(120, self._poll)
-
-    def destroy(self) -> None:
-        # Make sure a long-running search doesn't keep churning after the
-        # dialog is closed.
-        if self.worker.running:
-            self.worker.cancel()
-        super().destroy()
 
     def _handle(self, ev: str, payload: dict[str, Any]) -> None:
         if ev == "search_start":
@@ -2290,6 +2278,8 @@ class App:
         b("<Control-F>", lambda _e: self._focus_filter())
         b("<Control-e>", lambda _e: self._action_edit())
         b("<Control-E>", lambda _e: self._action_edit())
+        b("<Control-a>", lambda _e: self._select_all_tree_items())
+        b("<Control-A>", lambda _e: self._select_all_tree_items())
         b("<F1>",        lambda _e: self._show_help())
         # Esc clears filter when filter entry has focus, otherwise cancels.
         b("<Escape>", self._on_escape)
@@ -2301,6 +2291,14 @@ class App:
             return
         if self.worker.running:
             self._cancel()
+
+    def _select_all_tree_items(self) -> None:
+        focused = self.root.focus_get()
+        if focused is not None and isinstance(focused, ttk.Entry):
+            return
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children)
 
     def _focus_filter(self) -> None:
         ent = getattr(self, "_filter_entry", None)

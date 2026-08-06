@@ -6,7 +6,6 @@ Skip with:  pytest -m "not e2e"
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 

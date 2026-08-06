@@ -20,7 +20,6 @@ from rich.progress import (
 
 from documentcrawler.config import Config
 from documentcrawler.db import Database
-from documentcrawler.errors import AcquisitionError, SourceError
 from documentcrawler.fetcher import Fetcher
 from documentcrawler.metadata import MetadataEnricher
 from documentcrawler.models import (
@@ -380,10 +379,10 @@ class Pipeline:
         if self.per_doc_timeout_s is not None and self.per_doc_timeout_s > 0:
             try:
                 return await asyncio.wait_for(_inner(), timeout=self.per_doc_timeout_s)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.db.set_status(
                     doc.id, DocStatus.FAILED,
-                    error=f"pipeline: timeout after {self.per_doc_timeout_s:.0f}s"
+                    error=f"pipeline: timeout after {self.per_doc_timeout_s}s"
                 )
                 self._log_failure(doc.id, "pipeline", None,
                                   f"timeout after {self.per_doc_timeout_s:.0f}s",

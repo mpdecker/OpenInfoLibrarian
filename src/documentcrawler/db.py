@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -21,10 +22,13 @@ from documentcrawler.models import (
     SavedSearchRow,
 )
 
+
 class _JSONEncoder(json.JSONEncoder):
     def default(self, o: Any) -> Any:
         if isinstance(o, set):
             return sorted(list(o))
+        if isinstance(o, datetime):
+            return o.isoformat()
         return super().default(o)
 
 
@@ -48,6 +52,7 @@ CREATE TABLE IF NOT EXISTS documents (
     sha256      TEXT,
     error       TEXT,
     metadata    TEXT,        -- JSON: enriched metadata
+    priority    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -67,6 +72,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     bytes         INTEGER,
     success       INTEGER NOT NULL,
     error         TEXT,
+    error_kind    TEXT,
     started_at    TEXT NOT NULL,
     finished_at   TEXT NOT NULL,
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
@@ -153,6 +159,7 @@ class Database:
         self._conn = sqlite3.connect(self.path, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(SCHEMA)
@@ -186,6 +193,8 @@ class Database:
             (2, self._migrate_2),
             (3, self._migrate_3),
             (4, self._migrate_4),
+            (5, self._migrate_5),
+            (6, self._migrate_6),
         ]
 
         for version, fn in migrations:
@@ -237,7 +246,56 @@ class Database:
         if "timeout_s" not in cols:
             self._conn.execute("ALTER TABLE documents ADD COLUMN timeout_s INTEGER")
 
+    def _migrate_5(self) -> None:
+        """Add FTS5 virtual table for full-text search across documents."""
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5("
+                "title, authors, keywords, doi, isbn, content='documents', content_rowid='id')"
+            )
+            # Sync existing documents into FTS5 index
+            self._conn.execute(
+                "INSERT INTO documents_fts(rowid, title, authors, keywords, doi, isbn) "
+                "SELECT id, COALESCE(title, ''), COALESCE(authors, ''), COALESCE(keywords, ''), "
+                "COALESCE(doi, ''), COALESCE(isbn, '') FROM documents"
+            )
+            # Add triggers to keep FTS index synchronized
+            self._conn.executescript(
+                """
+                CREATE TRIGGER IF NOT EXISTS trg_documents_ai AFTER INSERT ON documents BEGIN
+                    INSERT INTO documents_fts(rowid, title, authors, keywords, doi, isbn)
+                    VALUES (new.id, COALESCE(new.title, ''), COALESCE(new.authors, ''),
+                            COALESCE(new.keywords, ''), COALESCE(new.doi, ''), COALESCE(new.isbn, ''));
+                END;
+                CREATE TRIGGER IF NOT EXISTS trg_documents_ad AFTER DELETE ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, title, authors, keywords, doi, isbn)
+                    VALUES('delete', old.id, COALESCE(old.title, ''), COALESCE(old.authors, ''),
+                           COALESCE(old.keywords, ''), COALESCE(old.doi, ''), COALESCE(old.isbn, ''));
+                END;
+                CREATE TRIGGER IF NOT EXISTS trg_documents_au AFTER UPDATE ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, title, authors, keywords, doi, isbn)
+                    VALUES('delete', old.id, COALESCE(old.title, ''), COALESCE(old.authors, ''),
+                           COALESCE(old.keywords, ''), COALESCE(old.doi, ''), COALESCE(old.isbn, ''));
+                    INSERT INTO documents_fts(rowid, title, authors, keywords, doi, isbn)
+                    VALUES (new.id, COALESCE(new.title, ''), COALESCE(new.authors, ''),
+                            COALESCE(new.keywords, ''), COALESCE(new.doi, ''), COALESCE(new.isbn, ''));
+                END;
+                """
+            )
+
+    def _migrate_6(self) -> None:
+        """Add priority column to documents table."""
+        cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "priority" not in cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_priority ON documents(priority)")
+
     def close(self) -> None:
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         self._conn.close()
 
     def health(self) -> bool:
@@ -246,6 +304,30 @@ class Database:
             return True
         except sqlite3.Error:
             return False
+
+    def vacuum(self) -> None:
+        """Reclaim unused database space and optimize indices."""
+        self._conn.execute("VACUUM")
+        self._conn.execute("PRAGMA optimize")
+
+    def integrity_check(self) -> bool:
+        """Run SQLite integrity check."""
+        try:
+            row = self._conn.execute("PRAGMA quick_check").fetchone()
+            return row is not None and row[0].lower() == "ok"
+        except sqlite3.Error:
+            return False
+
+    def backup(self, dest_path: Path) -> None:
+        """Perform a live thread-safe hot backup of the SQLite database."""
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_conn = sqlite3.connect(dest_path)
+        try:
+            with dest_conn:
+                self._conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -282,8 +364,8 @@ class Database:
         cur = self._conn.execute(
             """
             INSERT INTO documents (doi, title, authors, year, isbn, keywords, extra, url,
-                                   timeout_s, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                                   timeout_s, priority, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 q.doi,
@@ -295,6 +377,7 @@ class Database:
                 _dumps(q.extra),
                 q.url,
                 timeout_s,
+                q.priority,
                 _utcnow_iso(),
                 _utcnow_iso(),
             ),
@@ -367,7 +450,7 @@ class Database:
         if status:
             sql += " WHERE status = ?"
             params.append(status.value)
-        sql += " ORDER BY id ASC"
+        sql += " ORDER BY priority DESC, id ASC"
         if limit:
             sql += " LIMIT ?"
             params.append(limit)
@@ -382,7 +465,7 @@ class Database:
             return self._transient_failures()
         rows = self._conn.execute(
             "SELECT * FROM documents WHERE status IN ('pending','failed','in_progress') "
-            "ORDER BY id ASC"
+            "ORDER BY priority DESC, id ASC"
         ).fetchall()
         return [_row_to_document(r) for r in rows]
 
@@ -396,7 +479,7 @@ class Database:
                   ORDER BY a.id DESC LIMIT 1),
                  'transient'
                ) = 'transient'
-               ORDER BY d.id ASC"""
+               ORDER BY d.priority DESC, d.id ASC"""
         ).fetchall()
         return [_row_to_document(r) for r in rows]
 
@@ -411,6 +494,37 @@ class Database:
             (source,)
         ).fetchall()
         return [_row_to_document(r) for r in rows]
+
+    def get_source_diagnostics(self) -> list[dict[str, Any]]:
+        """Return diagnostic metrics per source calculated from attempt logs."""
+        rows = self._conn.execute(
+            """
+            SELECT
+                source,
+                COUNT(*) as total_attempts,
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful_attempts,
+                COALESCE(SUM(bytes), 0) as total_bytes,
+                SUM(CASE WHEN error_kind = 'transient' THEN 1 ELSE 0 END) as transient_errors,
+                SUM(CASE WHEN error_kind = 'permanent' THEN 1 ELSE 0 END) as permanent_errors
+            FROM attempts
+            GROUP BY source
+            ORDER BY total_attempts DESC
+            """
+        ).fetchall()
+        out = []
+        for r in rows:
+            tot = r["total_attempts"]
+            succ = r["successful_attempts"]
+            out.append({
+                "source": r["source"],
+                "total_attempts": tot,
+                "successful_attempts": succ,
+                "success_rate": round((succ / tot) * 100, 1) if tot > 0 else 0.0,
+                "total_bytes": r["total_bytes"],
+                "transient_errors": r["transient_errors"],
+                "permanent_errors": r["permanent_errors"],
+            })
+        return out
 
     def set_status(
         self,
@@ -462,6 +576,32 @@ class Database:
             ),
         )
 
+    def search_fts(self, query: str, limit: int = 50) -> list[DocumentRow]:
+        """Full-text search across documents using FTS5 virtual table."""
+        if not query.strip():
+            return []
+        try:
+            cur = self._conn.execute(
+                """
+                SELECT d.* FROM documents d
+                JOIN documents_fts fts ON d.id = fts.rowid
+                WHERE documents_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (query.strip(), limit),
+            )
+            return [_row_to_document(r) for r in cur.fetchall()]
+        except sqlite3.Error:
+            # Fallback to standard LIKE if FTS table or query syntax is unavailable
+            pattern = f"%{query.strip()}%"
+            cur = self._conn.execute(
+                "SELECT * FROM documents WHERE title LIKE ? OR authors LIKE ? OR keywords LIKE ? "
+                "OR doi LIKE ? OR isbn LIKE ? ORDER BY id DESC LIMIT ?",
+                (pattern, pattern, pattern, pattern, pattern, limit),
+            )
+            return [_row_to_document(r) for r in cur.fetchall()]
+
     def log_attempt(self, doc_id: int, attempt: AttemptResult) -> None:
         self._conn.execute(
             """
@@ -497,7 +637,7 @@ class Database:
                     http_status=r["http_status"],
                     bytes=r["bytes"],
                     error=r["error"],
-                    error_kind=r["error_kind"] if "error_kind" in r.keys() else None,  # noqa: SIM401
+                    error_kind=r["error_kind"] if "error_kind" in r.keys() else None,  # noqa: SIM118, SIM401
                     started_at=_parse_dt(r["started_at"]),
                     finished_at=_parse_dt(r["finished_at"]),
                 )
@@ -686,6 +826,7 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRow:
         sha256=row["sha256"],
         error=row["error"],
         timeout_s=_safe_int(row, "timeout_s"),
+        priority=_safe_int(row, "priority") or 0,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )

@@ -14,6 +14,7 @@ Supported publishers:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from documentcrawler.searcher.base import Searcher, SearchHit, register
@@ -227,10 +228,8 @@ class IEEESearcher(Searcher):
         year: int | None = None
         pub_year = article.get("publication_year")
         if pub_year:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 year = int(pub_year)
-            except (TypeError, ValueError):
-                pass
 
         container = article.get("publication_title")
         publisher = "IEEE"
@@ -314,10 +313,8 @@ class WileySearcher(Searcher):
             (msg.get("issued") or {}).get("date-parts") or [[None]]
         )
         if date_parts and date_parts[0] and date_parts[0][0]:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 year = int(date_parts[0][0])
-            except (TypeError, ValueError):
-                pass
 
         doi = msg.get("DOI")
         container = (msg.get("container-title") or [None])[0]

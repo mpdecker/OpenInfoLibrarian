@@ -1211,7 +1211,7 @@ def test_multi_searcher_handles_many_sources():
     """MultiSearcher handles many sources efficiently."""
     # Create minimal responses for many sources
     json_map = {}
-    for i, src in enumerate(["crossref", "openalex", "arxiv", "semantic_scholar",
+    for _i, src in enumerate(["crossref", "openalex", "arxiv", "semantic_scholar",
                               "openlibrary", "core", "doi_org", "jstor"]):
         if src == "crossref":
             json_map["api.crossref.org"] = {"message": {"items": []}}

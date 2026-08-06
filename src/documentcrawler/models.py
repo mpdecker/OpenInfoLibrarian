@@ -33,6 +33,7 @@ class DocumentQuery(BaseModel):
     isbn: str | None = None
     keywords: list[str] = Field(default_factory=list)
     url: str | None = None
+    priority: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
 
     def is_empty(self) -> bool:
@@ -91,6 +92,7 @@ class DocumentRow(BaseModel):
     sha256: str | None = None
     error: str | None = None
     timeout_s: int | None = None
+    priority: int = 0
     created_at: datetime
     updated_at: datetime
 

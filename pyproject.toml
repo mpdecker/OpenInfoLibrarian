@@ -87,5 +87,5 @@ markers = [
     "httpx_mock: tests that mock HTTPX responses",
 ]
 filterwarnings = [
-    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:.*StarletteDeprecationWarning.*",
 ]

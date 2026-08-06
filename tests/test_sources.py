@@ -9,9 +9,10 @@ import asyncio
 from typing import Any
 
 from documentcrawler.config import SourceConfig
-from documentcrawler.models import Candidate, DocumentQuery
+from documentcrawler.models import DocumentQuery
 from documentcrawler.sources import build_source
-from documentcrawler.sources.base import SourceContext, registry as source_registry
+from documentcrawler.sources.base import SourceContext
+from documentcrawler.sources.base import registry as source_registry
 
 
 class FakeFetcher:
