@@ -22,22 +22,31 @@ def _first_author_surname(authors: list[str]) -> str:
     return parts[-1].capitalize() if parts else "Unknown"
 
 
-def _make_cite_key(doc: DocumentRow) -> str:
+def _make_cite_key(doc: DocumentRow, template: str | None = None) -> str:
     author = _first_author_surname(doc.authors)
-    year = doc.year or "nd"
+    year = str(doc.year) if doc.year else "nd"
     if doc.title:
         words = [w for w in re.sub(r"[^a-zA-Z0-9\s]", "", doc.title).split() if len(w) > 2]
         first_word = words[0].capitalize() if words else "Doc"
     else:
         first_word = "Doc"
+
+    if template:
+        key = template.format(
+            author=author,
+            year=year,
+            title_word=first_word,
+            id=doc.id,
+        )
+        return re.sub(r"[^a-zA-Z0-9_-]", "", key)
     return f"{author}{year}{first_word}"
 
 
-def export_bibtex(docs: Sequence[DocumentRow]) -> str:
+def export_bibtex(docs: Sequence[DocumentRow], citekey_template: str | None = None) -> str:
     """Format DocumentRow instances as a BibTeX bibliography string."""
     entries: list[str] = []
     for doc in docs:
-        key = _make_cite_key(doc)
+        key = _make_cite_key(doc, template=citekey_template)
         entry_type = "article" if doc.doi else "book" if doc.isbn else "misc"
         lines = [f"@{entry_type}{{{key},"]
         if doc.title:
