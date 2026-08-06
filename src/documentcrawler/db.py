@@ -597,6 +597,13 @@ class Database:
             )
             return [_row_to_document(r) for r in cur.fetchall()]
 
+    def optimize_fts(self) -> None:
+        """Optimize SQLite FTS5 index structure to merge B-tree segments."""
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.execute(
+                "INSERT INTO documents_fts(documents_fts) VALUES('optimize')"
+            )
+
     def log_attempt(self, doc_id: int, attempt: AttemptResult) -> None:
         self._conn.execute(
             """

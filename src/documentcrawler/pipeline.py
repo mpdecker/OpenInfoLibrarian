@@ -434,5 +434,32 @@ class Pipeline:
         )
 
 
+    async def process_batch(
+        self,
+        docs: list[DocumentRow],
+        max_concurrency: int = 4,
+    ) -> list[DocumentRow]:
+        """Process a batch of documents concurrently using a Semaphore."""
+        if not docs:
+            return []
+
+        async with Fetcher(
+            self.config.fetcher,
+            timeout_s=self.config.general.request_timeout_s,
+            max_retries=self.config.general.max_retries,
+        ) as fetcher:
+            enricher = self._build_enricher(fetcher)
+            sem = asyncio.Semaphore(max(1, max_concurrency))
+
+            async def _bounded_process(doc: DocumentRow) -> DocumentRow:
+                async with sem:
+                    await self._process_one(doc, fetcher, enricher)
+                    updated = self.db.get(doc.id)
+                    return updated or doc
+
+            tasks = [asyncio.create_task(_bounded_process(d)) for d in docs]
+            return list(await asyncio.gather(*tasks))
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)

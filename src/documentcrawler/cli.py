@@ -42,6 +42,8 @@ from documentcrawler.utils.sanitize import normalize_doi, normalize_isbn
 
 app = typer.Typer(help="Find and download academic documents from many sources.",
                   no_args_is_help=True, add_completion=False)
+db_app = typer.Typer(help="Database maintenance and optimization tools.")
+app.add_typer(db_app, name="db", rich_help_panel="Maintenance")
 
 
 @app.callback(invoke_without_command=True)
@@ -875,6 +877,14 @@ def search_fts_command(
                 str(r.year or ""),
             )
         console.print(table)
+
+
+@db_app.command(name="optimize-fts")
+def db_optimize_fts_command(ctx: typer.Context) -> None:
+    """Optimize SQLite FTS5 index structure to merge B-tree segments."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        db.optimize_fts()
+        console.print("[green]Successfully optimized FTS5 full-text index.[/green]")
 
 
 def _status_color(s: DocStatus) -> str:
