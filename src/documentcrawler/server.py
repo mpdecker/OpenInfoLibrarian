@@ -129,9 +129,19 @@ def create_app(config_path: Path) -> FastAPI:
             db.close()
             log.info("Server stopped")
 
-    app = FastAPI(title="documentcrawler", version=__version__, lifespan=lifespan)
-
-    # --- middleware ----------------------------------------------------------
+    app = FastAPI(
+        title="DocumentCrawler Acquisition Server",
+        description="REST & SSE API server for automated document acquisition, metadata enrichment, and bibliography exports.",
+        version=__version__,
+        lifespan=lifespan,
+        openapi_tags=[
+            {"name": "Health", "description": "System health and status endpoints."},
+            {"name": "Acquisition", "description": "Document queuing and acquisition endpoints."},
+            {"name": "Queue", "description": "Queue status and item management endpoints."},
+            {"name": "Export", "description": "Bibliography export endpoints (BibTeX, RIS, CSV, JSONL)."},
+            {"name": "Streaming", "description": "Real-time Server-Sent Events (SSE) stream."},
+        ],
+    )  # --- middleware ----------------------------------------------------------
 
     @app.middleware("http")
     async def log_and_auth_requests(request: Request, call_next: Any) -> Any:
@@ -182,7 +192,7 @@ def create_app(config_path: Path) -> FastAPI:
 
     # --- endpoints -----------------------------------------------------------
 
-    @app.get("/health", response_model=HealthResponse)
+    @app.get("/health", response_model=HealthResponse, tags=["Health"])
     async def health() -> HealthResponse:
         db: Database = app.state.db
         healthy = db.health()
@@ -191,7 +201,7 @@ def create_app(config_path: Path) -> FastAPI:
             db="connected" if healthy else "error",
         )
 
-    @app.post("/acquire", response_model=AcquireResponse)
+    @app.post("/acquire", response_model=AcquireResponse, tags=["Acquisition"])
     async def acquire(body: AcquireRequest, request: Request,
                       timeout: int | None = None) -> AcquireResponse:
         query = DocumentQuery(
@@ -231,7 +241,7 @@ def create_app(config_path: Path) -> FastAPI:
             title=doc.title,
         )
 
-    @app.post("/acquire/batch", response_model=AcquireBatchResponse)
+    @app.post("/acquire/batch", response_model=AcquireBatchResponse, tags=["Acquisition"])
     async def acquire_batch(requests: list[AcquireRequest]) -> AcquireBatchResponse:
         if not requests:
             raise HTTPException(status_code=400, detail="Batch request list cannot be empty")
@@ -257,7 +267,7 @@ def create_app(config_path: Path) -> FastAPI:
 
         return AcquireBatchResponse(queued_count=len(ids), document_ids=ids)
 
-    @app.get("/jobs/{job_id}", response_model=JobResponse)
+    @app.get("/jobs/{job_id}", response_model=JobResponse, tags=["Acquisition"])
     async def get_job(job_id: int) -> JobResponse:
         db: Database = app.state.db
         doc = db.get(job_id)
@@ -276,7 +286,7 @@ def create_app(config_path: Path) -> FastAPI:
             error=doc.error,
         )
 
-    @app.get("/queue", response_model=QueueSummary)
+    @app.get("/queue", response_model=QueueSummary, tags=["Queue"])
     async def get_queue() -> QueueSummary:
         db: Database = app.state.db
         counts = db.status_summary()
@@ -302,7 +312,7 @@ def create_app(config_path: Path) -> FastAPI:
             items=items,
         )
 
-    @app.get("/export")
+    @app.get("/export", tags=["Export"])
     async def export_documents(
         format: str = "bibtex",
         status: str | None = None,
@@ -330,7 +340,7 @@ def create_app(config_path: Path) -> FastAPI:
 
         return Response(content=content, media_type=media)
 
-    @app.get("/events")
+    @app.get("/events", tags=["Streaming"])
     async def stream_events(request: Request) -> StreamingResponse:
         """Stream real-time server events via Server-Sent Events (SSE)."""
         async def event_generator() -> AsyncIterator[str]:

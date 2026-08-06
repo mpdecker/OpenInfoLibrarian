@@ -100,3 +100,11 @@ def test_events_stream_connects(client):
         assert "text/event-stream" in resp.headers["content-type"]
         line = next(resp.iter_lines())
         assert "SSE pipeline stream connected" in line
+
+
+def test_openapi_metadata(client):
+    resp = client.get("/openapi.json")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["info"]["title"] == "DocumentCrawler Acquisition Server"
+    assert "openapi_tags" in data or "tags" in data
