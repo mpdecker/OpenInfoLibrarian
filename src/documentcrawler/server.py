@@ -128,8 +128,20 @@ def create_app(config_path: Path) -> FastAPI:
     # --- middleware ----------------------------------------------------------
 
     @app.middleware("http")
-    async def log_requests(request: Request, call_next: Any) -> Any:
+    async def log_and_auth_requests(request: Request, call_next: Any) -> Any:
         start = time.monotonic()
+        expected_key = getattr(cfg.server, "api_key", None) if hasattr(cfg, "server") else None
+        if expected_key:
+            provided_key = request.headers.get("x-api-key")
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                provided_key = auth_header[7:].strip()
+            if provided_key != expected_key:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": {"code": "unauthorized", "message": "Invalid or missing API key"}},
+                )
+
         response = await call_next(request)
         elapsed_ms = (time.monotonic() - start) * 1000
         log.info(

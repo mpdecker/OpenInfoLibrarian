@@ -81,9 +81,17 @@ class SourceConfig:
 
 
 @dataclass
+class ServerConfig:
+    host: str = "127.0.0.1"
+    port: int = 8000
+    api_key: str | None = None
+
+
+@dataclass
 class Config:
     general: GeneralConfig = field(default_factory=GeneralConfig)
     fetcher: FetcherConfig = field(default_factory=FetcherConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
     metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     sources_order: list[str] = field(default_factory=list)
     sources: dict[str, SourceConfig] = field(default_factory=dict)
@@ -219,6 +227,17 @@ def _coerce_sources(raw: dict[str, Any]) -> tuple[list[str], dict[str, SourceCon
     return order, sources
 
 
+def _coerce_server(raw: dict[str, Any]) -> ServerConfig:
+    cfg = ServerConfig()
+    if "host" in raw:
+        cfg.host = str(raw["host"])
+    if "port" in raw:
+        cfg.port = int(raw["port"])
+    if "api_key" in raw:
+        cfg.api_key = str(raw["api_key"]) if raw["api_key"] else None
+    return cfg
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load config.toml from the given path (default: ./config.toml).
 
@@ -234,6 +253,7 @@ def load_config(path: Path | None = None) -> Config:
     config = Config(raw=raw)
     config.general = _coerce_general(raw.get("general", {}))
     config.fetcher = _coerce_fetcher(raw.get("fetcher", {}))
+    config.server = _coerce_server(raw.get("server", {}))
     config.metadata = raw.get("metadata", {})
     config.sources_order, config.sources = _coerce_sources(raw.get("sources", {}))
     warnings = config.validate()

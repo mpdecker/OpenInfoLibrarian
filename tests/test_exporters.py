@@ -40,6 +40,12 @@ def test_export_bibtex():
     assert "author = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki}" in out
 
 
+def test_export_bibtex_custom_template():
+    doc = _sample_doc()
+    out = export_bibtex([doc], citekey_template="{author}_{year}_{id}")
+    assert "@article{Vaswani_2017_1," in out
+
+
 def test_export_ris():
     doc = _sample_doc()
     out = export_ris([doc])
