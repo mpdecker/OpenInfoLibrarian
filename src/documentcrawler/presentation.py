@@ -268,18 +268,14 @@ def _arxiv_id(hit: SearchHitLike) -> str | None:
 
 
 def _source_record_identifier(hit: SearchHitLike) -> str | None:
-    if hit.source == "annas_archive":
-        if isinstance(hit.extra.get("md5"), str) and hit.extra["md5"]:
-            return f"Anna's Archive MD5 {hit.extra['md5']}"
-    if hit.source == "libgen":
-        if isinstance(hit.extra.get("md5"), str) and hit.extra["md5"]:
-            return f"LibGen MD5 {hit.extra['md5']}"
-    if hit.source == "zlibrary":
-        if isinstance(hit.extra.get("zlib_id"), str) and hit.extra["zlib_id"]:
-            return f"Z-Library ID {hit.extra['zlib_id']}"
-    if hit.source == "openlibrary":
-        if isinstance(hit.extra.get("ia_id"), str) and hit.extra["ia_id"]:
-            return f"Internet Archive {hit.extra['ia_id']}"
+    if hit.source == "annas_archive" and isinstance(hit.extra.get("md5"), str) and hit.extra["md5"]:
+        return f"Anna's Archive MD5 {hit.extra['md5']}"
+    if hit.source == "libgen" and isinstance(hit.extra.get("md5"), str) and hit.extra["md5"]:
+        return f"LibGen MD5 {hit.extra['md5']}"
+    if hit.source == "zlibrary" and isinstance(hit.extra.get("zlib_id"), str) and hit.extra["zlib_id"]:
+        return f"Z-Library ID {hit.extra['zlib_id']}"
+    if hit.source == "openlibrary" and isinstance(hit.extra.get("ia_id"), str) and hit.extra["ia_id"]:
+        return f"Internet Archive {hit.extra['ia_id']}"
     return None
 
 

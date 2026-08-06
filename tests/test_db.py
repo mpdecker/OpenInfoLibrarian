@@ -180,3 +180,58 @@ def test_error_kind_column_exists(tmp_path):
         for row in db._conn.execute("PRAGMA table_info(attempts)").fetchall()
     }
     assert "error_kind" in cols
+
+
+def test_search_fts_matches_query(tmp_path):
+    db = Database(tmp_path / "fts.db")
+    db.add_query(DocumentQuery(title="Quantum Computing Algorithms", doi="10.1000/182"))
+    db.add_query(DocumentQuery(title="Relativity Theory", doi="10.1000/183"))
+
+    hits = db.search_fts("Quantum")
+    assert len(hits) == 1
+    assert hits[0].title == "Quantum Computing Algorithms"
+    db.close()
+
+
+def test_priority_queue_ordering(tmp_path):
+    db = Database(tmp_path / "prio.db")
+    id1 = db.add_query(DocumentQuery(title="Low Priority Paper", doi="10.1000/low", priority=0))
+    id2 = db.add_query(DocumentQuery(title="High Priority Paper", doi="10.1000/high", priority=10))
+
+    pending = db.pending_or_failed()
+    assert len(pending) == 2
+    assert pending[0].id == id2  # High priority comes first!
+    assert pending[1].id == id1
+    db.close()
+
+
+def test_source_diagnostics(tmp_path):
+    from datetime import UTC, datetime
+
+    from documentcrawler.models import AttemptResult
+
+    db = Database(tmp_path / "diag.db")
+    doc_id = db.add_query(DocumentQuery(doi="10.1000/diag"))
+    now = datetime.now(UTC)
+
+    db.log_attempt(
+        doc_id,
+        AttemptResult(
+            source="scihub",
+            success=True,
+            candidate_url="https://sci-hub.se/10.1000/diag",
+            http_status=200,
+            bytes=1048576,
+            started_at=now,
+            finished_at=now,
+        ),
+    )
+
+    stats = db.get_source_diagnostics()
+    assert len(stats) == 1
+    assert stats[0]["source"] == "scihub"
+    assert stats[0]["total_attempts"] == 1
+    assert stats[0]["successful_attempts"] == 1
+    assert stats[0]["success_rate"] == 100.0
+    db.close()
+

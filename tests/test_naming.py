@@ -42,3 +42,17 @@ def test_render_destination_no_folder(tmp_path: Path):
     )
     assert dest.parent == tmp_path
     assert "10.1000_xyz" in dest.name
+
+
+def test_render_destination_journal_and_publisher_placeholders(tmp_path: Path):
+    doc = _doc()
+    doc.extra = {"journal": "Nature Communications", "publisher": "Springer Nature"}
+    dest = render_destination(
+        tmp_path,
+        doc,
+        filename_template="{first_author_last}_{year}.{ext}",
+        folder_template="{publisher_slug}/{journal_slug}",
+        ext="pdf",
+    )
+    assert dest.parent == tmp_path / "springer-nature" / "nature-communications"
+    assert dest.name == "Vaswani_2017.pdf"

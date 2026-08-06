@@ -1,11 +1,9 @@
 """Tests for the HTTP acquisition server."""
 
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from documentcrawler.config import Config
 from documentcrawler.server import create_app
 
 
@@ -86,3 +84,11 @@ def test_acquire_invalid_body_returns_error_structure(client):
     assert resp.status_code == 400 or resp.status_code == 422
     data = resp.json()
     assert "error" in data or "detail" in data
+
+
+def test_events_stream_connects(client):
+    with client.stream("GET", "/events") as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        line = next(resp.iter_lines())
+        assert "SSE pipeline stream connected" in line

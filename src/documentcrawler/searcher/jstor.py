@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from documentcrawler.searcher.base import Searcher, SearchHit, register
 from documentcrawler.utils.logging import get_logger
 from documentcrawler.utils.sanitize import normalize_doi
@@ -23,45 +21,6 @@ class JstorSearcher(Searcher):
     """
 
     async def search(self, query: str, limit: int = 20, kind: str = "auto") -> list[SearchHit]:
-        # JSTOR search requires specific headers and payload
-        # This is a metadata-only searcher - no PDF URLs returned
-
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Referer": "https://www.jstor.org/",
-        }
-
-        # Build search payload
-        payload: dict[str, Any] = {
-            "query": {
-                "bool": {
-                    "must": []
-                }
-            },
-            "size": min(limit, 50),
-            "sort": [{"_score": "desc"}],
-            "_source": ["title", "author", "date", "doi", "journal", "volume", "issue", "pages"],
-        }
-
-        # Configure query based on kind
-        if kind == "doi" or (kind == "auto" and normalize_doi(query)):
-            doi = normalize_doi(query) or query
-            # Search by DOI
-            payload["query"]["bool"]["must"].append({"match": {"doi": doi}})
-        elif kind == "title":
-            payload["query"]["bool"]["must"].append({"match_phrase": {"title": query}})
-        elif kind == "author":
-            payload["query"]["bool"]["must"].append({"match": {"author": query}})
-        else:
-            # General search
-            payload["query"]["bool"]["must"].append({
-                "multi_match": {
-                    "query": query,
-                    "fields": ["title^3", "author^2", "abstract", "keywords"]
-                }
-            })
-
         try:
             # JSTOR's API is not officially public; fallback to page scraping pattern
             # Using their search endpoint if available, otherwise construct direct URLs

@@ -11,8 +11,7 @@ import httpx
 import pytest
 
 from documentcrawler.config import FetcherConfig
-from documentcrawler.fetcher.http import FetchError, FetchResponse, Fetcher, _RateLimiter
-
+from documentcrawler.fetcher.http import Fetcher, FetchError, FetchResponse, _RateLimiter
 
 # -----------------------------------------------------------------------------
 # FetchResponse tests
@@ -392,3 +391,21 @@ def test_prioritize_pdf_urls():
     
     # Direct PDF links should come first
     assert any("cdn" in u for u in prioritized[:2])
+
+
+def test_host_circuit_breaker():
+    config = FetcherConfig()
+    fetcher = Fetcher(config)
+    url = "https://bad-mirror.example.org/doc.pdf"
+
+    assert fetcher.is_host_healthy(url) is True
+
+    fetcher.mark_host_failed(url)
+    fetcher.mark_host_failed(url)
+    assert fetcher.is_host_healthy(url) is True
+
+    fetcher.mark_host_failed(url)  # 3rd failure triggers cooldown
+    assert fetcher.is_host_healthy(url) is False
+
+    fetcher.mark_host_success(url)
+    assert fetcher.is_host_healthy(url) is True

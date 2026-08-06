@@ -6,6 +6,7 @@ to its detail page, and emit slow_download candidates.
 
 from __future__ import annotations
 
+import contextlib
 from urllib.parse import quote, urljoin
 
 from selectolax.parser import HTMLParser
@@ -57,10 +58,8 @@ class AnnasArchiveSource(Source):
 
             detail_url = f"{base}/md5/{md5}"
             detail_html: str | None = None
-            try:
+            with contextlib.suppress(Exception):
                 detail_html = await ctx.fetcher.get_text(detail_url)
-            except Exception:
-                pass
 
             if detail_html is None:
                 try:

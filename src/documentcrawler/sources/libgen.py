@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from urllib.parse import quote, urljoin, urlparse
 
 from selectolax.parser import HTMLParser
@@ -69,10 +70,8 @@ class LibgenSource(Source):
             mirror = mirror.rstrip("/")
             url = f"{mirror}/index.php?req={quote(query)}"
             html: str | None = None
-            try:
+            with contextlib.suppress(Exception):
                 html = await ctx.fetcher.get_text(url)
-            except Exception:
-                pass
 
             if html is None:
                 try:

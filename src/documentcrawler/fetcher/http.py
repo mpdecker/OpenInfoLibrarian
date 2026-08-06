@@ -98,6 +98,33 @@ class Fetcher:
         self._client: httpx.AsyncClient | None = None
         self._limiter = _RateLimiter(config)
         self._browser_pool = None
+        self._unhealthy_until: dict[str, float] = {}
+        self._failure_counts: dict[str, int] = {}
+
+    def is_host_healthy(self, url: str) -> bool:
+        """Check if target host is currently healthy or in a cooldown period."""
+        host = self._host(url)
+        if not host:
+            return True
+        until = self._unhealthy_until.get(host, 0.0)
+        return time.monotonic() >= until
+
+    def mark_host_failed(self, url: str, cooldown_s: float = 60.0) -> None:
+        """Record a network/timeout failure for host; trigger cooldown if threshold reached."""
+        host = self._host(url)
+        if not host:
+            return
+        cnt = self._failure_counts.get(host, 0) + 1
+        self._failure_counts[host] = cnt
+        if cnt >= 3:
+            self._unhealthy_until[host] = time.monotonic() + cooldown_s
+
+    def mark_host_success(self, url: str) -> None:
+        """Reset failure counter when a host responds successfully."""
+        host = self._host(url)
+        if host:
+            self._failure_counts.pop(host, None)
+            self._unhealthy_until.pop(host, None)
 
     async def __aenter__(self) -> Fetcher:
         await self._ensure_client()

@@ -4,17 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
 from documentcrawler.models import (
+    AttemptResult,
     Candidate,
     DocStatus,
     DocumentQuery,
     DocumentRow,
     SavedSearchRow,
-    AttemptResult,
 )
-
 
 # -----------------------------------------------------------------------------
 # DocumentQuery tests

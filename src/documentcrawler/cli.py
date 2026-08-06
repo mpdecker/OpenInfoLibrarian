@@ -26,6 +26,12 @@ from documentcrawler.config import (
 )
 from documentcrawler.db import Database
 from documentcrawler.errors import CLIError, DocumentCrawlerError
+from documentcrawler.exporters import (
+    export_bibtex,
+    export_csv,
+    export_jsonl,
+    export_ris,
+)
 from documentcrawler.fetcher import Fetcher
 from documentcrawler.importers import parse_file
 from documentcrawler.models import DocStatus, DocumentQuery
@@ -64,7 +70,6 @@ def _make_console() -> Console:
     etc.).  We force UTF-8 and tell the underlying stream to substitute
     unrepresentable characters rather than raising.
     """
-    import sys
 
     stream = sys.stdout
     try:
@@ -180,6 +185,7 @@ def add_cmd(
     isbn: str | None = typer.Option(None, "--isbn"),
     keyword: list[str] = typer.Option(None, "--keyword", "-k"),
     url: str | None = typer.Option(None, "--url"),
+    priority: int = typer.Option(0, "--priority", "-p", help="Processing priority (higher runs first)."),
 ) -> None:
     """Enqueue a single document."""
     with _loaded(ctx.obj["config_path"]) as (cfg, db):
@@ -191,11 +197,59 @@ def add_cmd(
             isbn=normalize_isbn(isbn),
             keywords=list(keyword or []),
             url=url,
+            priority=priority,
         )
         if query.is_empty():
             raise CLIError("Need at least one of --doi/--title/--isbn/--url")
         doc_id = db.add_query(query)
         console.print(f"[green]queued[/green] document #{doc_id}")
+
+
+@app.command(name="add-batch", rich_help_panel="Queue")
+def add_batch(
+    ctx: typer.Context,
+    references: list[str] = typer.Argument(
+        None,
+        help="List of DOIs, ISBNs, or URLs to enqueue.",
+    ),
+    file: Path | None = typer.Option(
+        None, "--file", "-f",
+        help="Text file containing one DOI, ISBN, or URL per line.",
+    ),
+    priority: int = typer.Option(0, "--priority", "-p", help="Processing priority (higher runs first)."),
+) -> None:
+    """Enqueue multiple references at once from command line arguments or a text file."""
+    targets: list[str] = list(references) if references else []
+    if file:
+        if not file.exists():
+            raise CLIError(f"File not found: {file}")
+        for line in file.read_text(encoding="utf-8").splitlines():
+            line_str = line.strip()
+            if line_str and not line_str.startswith("#"):
+                targets.append(line_str)
+
+    if not targets:
+        raise CLIError("Provide at least one reference argument or a valid --file.")
+
+    queries: list[DocumentQuery] = []
+    for ref in targets:
+        doi = normalize_doi(ref)
+        isbn = normalize_isbn(ref)
+        if doi:
+            queries.append(DocumentQuery(doi=doi, priority=priority))
+        elif isbn:
+            queries.append(DocumentQuery(isbn=isbn, priority=priority))
+        elif ref.startswith(("http://", "https://")):
+            queries.append(DocumentQuery(url=ref, priority=priority))
+        else:
+            queries.append(DocumentQuery(title=ref, priority=priority))
+
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        added, skipped = db.add_many(queries)
+        console.print(
+            f"[green]enqueued[/green] {added} documents "
+            f"([yellow]{skipped} skipped as duplicates[/yellow])"
+        )
 
 
 @app.command(name="import", rich_help_panel="Queue")
@@ -348,6 +402,73 @@ def list_cmd(
     console.print(table)
     if len(rows) == limit and total_count > limit:
         console.print(f"[dim]Showing {limit} of {total_count} documents. Use --limit to show more.[/dim]")
+
+
+db_app = typer.Typer(help="Database maintenance and hot backup commands.")
+app.add_typer(db_app, name="db", rich_help_panel="Maintenance")
+
+
+@db_app.command(name="vacuum")
+def db_vacuum(ctx: typer.Context) -> None:
+    """Reclaim unused database space and optimize search indices."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        db.vacuum()
+        console.print("[green]Database successfully vacuumed and indices optimized.[/green]")
+
+
+@db_app.command(name="check")
+def db_check(ctx: typer.Context) -> None:
+    """Run SQLite integrity check."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        ok = db.integrity_check()
+        if ok:
+            console.print("[green]Database integrity check PASSED (ok).[/green]")
+        else:
+            console.print("[red]Database integrity check FAILED![/red]")
+            raise typer.Exit(1)
+
+
+@db_app.command(name="backup")
+def db_backup(
+    ctx: typer.Context,
+    dest: Path = typer.Argument(..., help="Destination path for hot backup file (e.g. backup.db)."),
+) -> None:
+    """Perform a live thread-safe hot backup of the SQLite database."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        db.backup(dest)
+        console.print(f"[green]Hot backup successfully written to {dest}[/green]")
+
+
+@app.command(rich_help_panel="Maintenance")
+def shell(ctx: typer.Context) -> None:
+    """Launch an interactive REPL shell for DocumentCrawler."""
+    console.print("[bold cyan]DocumentCrawler Interactive Shell[/bold cyan] (type 'help' or 'exit')")
+    while True:
+        try:
+            cmd = input("documentcrawler> ").strip()
+            if not cmd:
+                continue
+            if cmd in ("exit", "quit", "q"):
+                console.print("[dim]Exiting shell.[/dim]")
+                break
+            if cmd == "help":
+                console.print(
+                    "[cyan]Available commands:[/cyan]\n"
+                    "  status       - Show queue status summary\n"
+                    "  diagnostics  - Show source health diagnostics\n"
+                    "  vacuum       - Optimize database\n"
+                    "  exit         - Exit REPL"
+                )
+                continue
+            if cmd == "status":
+                status(ctx)
+            elif cmd == "vacuum":
+                db_vacuum(ctx)
+            else:
+                console.print(f"[yellow]Unknown command: {cmd}. Type 'help' for options.[/yellow]")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Exiting shell.[/dim]")
+            break
 
 
 @app.command(rich_help_panel="Queue")
@@ -641,6 +762,87 @@ def sources(
         console.print(t)
 
 
+@app.command(rich_help_panel="Queue management")
+def export(
+    ctx: typer.Context,
+    format: str = typer.Option(
+        "bibtex", "--format", "-f",
+        help="Export format: bibtex, ris, csv, json.",
+    ),
+    status: str = typer.Option(
+        "done", "--status", "-s",
+        help="Filter documents by status: done, pending, failed, or all.",
+    ),
+    output: Path | None = typer.Option(
+        None, "--output", "-o",
+        help="File path to write output. If omitted, prints to stdout.",
+    ),
+):
+    """Export queued or completed documents to BibTeX, RIS, CSV, or JSON Lines."""
+    config_path = ctx.obj.get("config_path")
+    with _loaded(config_path) as (_, db):
+        status_filter: DocStatus | None = None
+        if status.lower() != "all":
+            try:
+                status_filter = DocStatus(status.lower())
+            except ValueError as err:
+                raise CLIError(f"Invalid status filter: {status}. Use done, pending, failed, or all.") from err
+
+        docs = db.list_documents(status=status_filter, limit=10000)
+        fmt = format.lower()
+        if fmt in ("bib", "bibtex"):
+            content = export_bibtex(docs)
+        elif fmt == "ris":
+            content = export_ris(docs)
+        elif fmt == "csv":
+            content = export_csv(docs)
+        elif fmt in ("json", "jsonl"):
+            content = export_jsonl(docs)
+        else:
+            raise CLIError(f"Unsupported export format: {format}. Use bibtex, ris, csv, or json.")
+
+        if output:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(content, encoding="utf-8")
+            console.print(f"[green]Exported {len(docs)} documents to {output}[/green]")
+        else:
+            console.print(content)
+
+
+@app.command(rich_help_panel="Maintenance")
+def diagnostics(ctx: typer.Context) -> None:
+    """Display diagnostic health & telemetry metrics across all search and download sources."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        stats = db.get_source_diagnostics()
+        if not stats:
+            console.print("[yellow]No source attempt telemetry available in database yet.[/yellow]")
+            return
+
+        table = Table(title="Source Health & Telemetry Diagnostics", show_lines=True)
+        table.add_column("Source", style="cyan", no_wrap=True)
+        table.add_column("Attempts", justify="right")
+        table.add_column("Successes", justify="right", style="green")
+        table.add_column("Success Rate", justify="right", style="bold green")
+        table.add_column("Bandwidth (MB)", justify="right")
+        table.add_column("Transient Errs", justify="right", style="yellow")
+        table.add_column("Permanent Errs", justify="right", style="red")
+
+        for s in stats:
+            mb = round(s["total_bytes"] / (1024 * 1024), 2)
+            rate_fmt = f"{s['success_rate']}%"
+            table.add_row(
+                s["source"],
+                str(s["total_attempts"]),
+                str(s["successful_attempts"]),
+                rate_fmt,
+                f"{mb} MB",
+                str(s["transient_errors"]),
+                str(s["permanent_errors"]),
+            )
+
+        console.print(table)
+
+
 def _status_color(s: DocStatus) -> str:
     color = {
         DocStatus.PENDING: "yellow",
@@ -652,7 +854,6 @@ def _status_color(s: DocStatus) -> str:
 
 
 def _main():
-    import sys
     # Preprocess sys.argv to move global options (--config or -c) to the front
     args = sys.argv[1:]
     config_indices = []

@@ -1,13 +1,10 @@
 """Tests for pipeline per-document timeout and error_kind."""
 
 import asyncio
-from pathlib import Path
-
-import pytest
 
 from documentcrawler.config import Config
 from documentcrawler.db import Database
-from documentcrawler.models import DocStatus, DocumentQuery, Candidate
+from documentcrawler.models import Candidate, DocStatus, DocumentQuery
 from documentcrawler.pipeline import Pipeline
 
 
@@ -36,11 +33,17 @@ def test_per_doc_timeout_fires(tmp_path):
             "SourceConfig", (), {"name": "slow_mock", "enabled": True, "options": {}}
         )()
 
-        doc_id = db.add_query(DocumentQuery(doi="10.1234/timeout.1"))
+        doc_id = db.add_query(DocumentQuery(title="Timeout Test Doc"))
         doc = db.get(doc_id)
+
+        class DummyEnricher:
+            async def enrich(self, q):
+                from documentcrawler.metadata.enricher import EnrichedMetadata
+                return EnrichedMetadata(doi=q.doi, title=q.title)
 
         pipeline = Pipeline(cfg, db, per_doc_timeout_s=0.5, workers=1)
         pipeline._source_instances = [SlowSource()]
+        pipeline._build_enricher = lambda fetcher: DummyEnricher()
 
         summary = await pipeline.run([doc])
 
@@ -52,6 +55,7 @@ def test_per_doc_timeout_fires(tmp_path):
         attempts = db.attempts_for(doc_id)
         assert len(attempts) >= 1
         assert any(a.error_kind == "transient" for a in attempts if a.error_kind)
+        db.close()
 
     asyncio.run(_run())
 
@@ -89,5 +93,6 @@ def test_cancel_event_checked_between_sources(tmp_path):
 
         assert not s1.search_called
         assert not s2.search_called
+        db.close()
 
     asyncio.run(_run())

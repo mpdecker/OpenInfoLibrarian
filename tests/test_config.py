@@ -6,8 +6,6 @@ import pytest
 
 from documentcrawler.config import (
     Config,
-    GeneralConfig,
-    load_config,
     write_default_config,
 )
 from documentcrawler.errors import ConfigError

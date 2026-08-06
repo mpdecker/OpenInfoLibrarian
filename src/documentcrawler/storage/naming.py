@@ -21,12 +21,19 @@ def _first_author_last(authors: list[str]) -> str:
 def _render(template: str, doc: DocumentRow, ext: str) -> str:
     last = _first_author_last(doc.authors)
     initial = (last[:1] or "U").upper()
+    journal = doc.extra.get("journal") or doc.extra.get("container") or "no-journal"
+    publisher = doc.extra.get("publisher") or "no-publisher"
     fields = {
         "first_author_last": last,
         "first_author_initial": initial,
         "year": doc.year if doc.year else "n.d.",
         "title_slug": title_slug(doc.title),
         "doi_slug": safe_filename_part(doc.doi.replace("/", "_")) if doc.doi else "no-doi",
+        "journal": journal,
+        "journal_slug": title_slug(journal),
+        "publisher": publisher,
+        "publisher_slug": title_slug(publisher),
+        "isbn": doc.isbn or "no-isbn",
         "ext": ext.lstrip("."),
         "id": doc.id,
     }

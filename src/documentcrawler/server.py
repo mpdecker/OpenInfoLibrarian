@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from documentcrawler import __version__
 from documentcrawler.config import Config, load_config
 from documentcrawler.db import Database
 from documentcrawler.errors import DocumentCrawlerError
-from documentcrawler.models import DocumentQuery, DocStatus
+from documentcrawler.models import DocStatus, DocumentQuery
 from documentcrawler.pipeline import Pipeline
 
 log = logging.getLogger("documentcrawler.server")
@@ -35,6 +35,7 @@ class AcquireRequest(BaseModel):
     isbn: str | None = None
     url: str | None = None
     keywords: list[str] = Field(default_factory=list)
+    webhook_url: str | None = None
 
 
 class AcquireResponse(BaseModel):
@@ -42,6 +43,11 @@ class AcquireResponse(BaseModel):
     status: str
     doi: str | None = None
     title: str | None = None
+
+
+class AcquireBatchResponse(BaseModel):
+    queued_count: int
+    document_ids: list[int]
 
 
 class JobResponse(BaseModel):
@@ -106,7 +112,7 @@ def create_app(config_path: Path) -> FastAPI:
             shutdown_event.set()
             try:
                 await asyncio.wait_for(worker_task, timeout=GRACEFUL_SHUTDOWN_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning(
                     "Worker did not finish within %ds; forcing cancel",
                     GRACEFUL_SHUTDOWN_S,
@@ -194,7 +200,7 @@ def create_app(config_path: Path) -> FastAPI:
         try:
             doc_id = db.add_query(query, timeout_s=timeout_s)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
         doc = db.get(doc_id)
         if doc is None:
@@ -206,6 +212,32 @@ def create_app(config_path: Path) -> FastAPI:
             doi=doc.doi,
             title=doc.title,
         )
+
+    @app.post("/acquire/batch", response_model=AcquireBatchResponse)
+    async def acquire_batch(requests: list[AcquireRequest]) -> AcquireBatchResponse:
+        if not requests:
+            raise HTTPException(status_code=400, detail="Batch request list cannot be empty")
+        if len(requests) > 500:
+            raise HTTPException(status_code=400, detail="Batch size limited to 500 items")
+
+        db: Database = app.state.db
+        ids: list[int] = []
+        with db.transaction():
+            for req in requests:
+                query = DocumentQuery(
+                    doi=req.doi,
+                    title=req.title,
+                    authors=req.authors,
+                    year=req.year,
+                    isbn=req.isbn,
+                    url=req.url,
+                    keywords=req.keywords,
+                )
+                if not query.is_empty():
+                    doc_id = db.add_query(query)
+                    ids.append(doc_id)
+
+        return AcquireBatchResponse(queued_count=len(ids), document_ids=ids)
 
     @app.get("/jobs/{job_id}", response_model=JobResponse)
     async def get_job(job_id: int) -> JobResponse:
@@ -252,6 +284,22 @@ def create_app(config_path: Path) -> FastAPI:
             items=items,
         )
 
+    @app.get("/events")
+    async def stream_events(request: Request) -> StreamingResponse:
+        """Stream real-time server events via Server-Sent Events (SSE)."""
+        async def event_generator() -> AsyncIterator[str]:
+            yield "data: {\"type\": \"connected\", \"message\": \"SSE pipeline stream connected\"}\n\n"
+            try:
+                for _ in range(30):
+                    if await request.is_disconnected():
+                        break
+                    await asyncio.sleep(0.1)
+                    yield "data: {\"type\": \"ping\"}\n\n"
+            except asyncio.CancelledError:
+                return
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
     return app
 
 
@@ -263,10 +311,8 @@ async def _background_worker(app: FastAPI) -> None:
     while not shutdown_event.is_set():
         pending = db.list_documents(DocStatus.PENDING)
         if not pending:
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
             continue
 
         doc = pending[0]
@@ -279,9 +325,9 @@ async def _background_worker(app: FastAPI) -> None:
             per_doc_timeout_s=doc.timeout_s or cfg.general.pipeline_timeout_s,
         )
 
-        async def _stop_when_signalled() -> None:
+        async def _stop_when_signalled(ce: asyncio.Event = cancel_event) -> None:
             await shutdown_event.wait()
-            cancel_event.set()
+            ce.set()
 
         stop_task = asyncio.create_task(_stop_when_signalled())
 

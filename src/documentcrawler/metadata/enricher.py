@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
 from documentcrawler.fetcher import Fetcher
+from documentcrawler.metadata.arxiv import arxiv_lookup, extract_arxiv_id
 from documentcrawler.metadata.crossref import crossref_lookup, crossref_search
 from documentcrawler.metadata.openalex import openalex_lookup
 from documentcrawler.metadata.publication_resolver import PublicationResolver
@@ -104,55 +106,69 @@ class MetadataEnricher:
                 log.debug("crossref search failed: %s", e)
 
         if meta.doi:
-            try:
-                cr = await crossref_lookup(self.fetcher, meta.doi, mailto=self.crossref_mailto)
-                if cr:
-                    meta.title = meta.title or _join_first(cr.get("title"))
-                    if not meta.authors:
-                        meta.authors = _crossref_authors(cr.get("author") or [])
-                    meta.year = meta.year or _crossref_year(cr)
-                    meta.url = meta.url or cr.get("URL")
-                    meta.journal = meta.journal or _join_first(cr.get("container-title"))
-                    meta.publisher = meta.publisher or cr.get("publisher")
-                    meta.raw["crossref"] = cr
-            except Exception as e:
-                log.debug("crossref lookup failed: %s", e)
-
-            try:
-                oa = await openalex_lookup(self.fetcher, meta.doi)
-                if oa:
-                    meta.raw["openalex"] = oa
-                    meta.url = meta.url or oa.get("doi") or oa.get("id")
-                    if oa.get("primary_location"):
-                        url = oa["primary_location"].get("pdf_url")
-                        if url:
-                            meta.oa_urls.append(url)
-                    for loc in oa.get("locations", []) or []:
-                        if loc.get("pdf_url"):
-                            meta.oa_urls.append(loc["pdf_url"])
-                    ids = oa.get("ids") or {}
-                    if ids.get("pmid"):
-                        meta.pmid = str(ids["pmid"]).rsplit("/", 1)[-1]
-                    if ids.get("pmcid"):
-                        meta.pmcid = str(ids["pmcid"]).rsplit("/", 1)[-1]
-            except Exception as e:
-                log.debug("openalex lookup failed: %s", e)
-
+            tasks = [
+                crossref_lookup(self.fetcher, meta.doi, mailto=self.crossref_mailto),
+                openalex_lookup(self.fetcher, meta.doi),
+            ]
             if self.unpaywall_email:
-                try:
-                    up = await unpaywall_lookup(self.fetcher, meta.doi, self.unpaywall_email)
-                    if up:
-                        meta.raw["unpaywall"] = up
-                        best = up.get("best_oa_location") or {}
-                        for key in ("url_for_pdf", "url"):
-                            if best.get(key):
-                                meta.oa_urls.append(best[key])
-                        for loc in up.get("oa_locations") or []:
-                            for key in ("url_for_pdf", "url"):
-                                if loc.get(key):
-                                    meta.oa_urls.append(loc[key])
-                except Exception as e:
-                    log.debug("unpaywall lookup failed: %s", e)
+                tasks.append(unpaywall_lookup(self.fetcher, meta.doi, self.unpaywall_email))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            cr = results[0] if len(results) > 0 and isinstance(results[0], dict) else None
+            oa = results[1] if len(results) > 1 and isinstance(results[1], dict) else None
+            up = results[2] if len(results) > 2 and isinstance(results[2], dict) else None
+
+            if cr:
+                meta.title = meta.title or _join_first(cr.get("title"))
+                if not meta.authors:
+                    meta.authors = _crossref_authors(cr.get("author") or [])
+                meta.year = meta.year or _crossref_year(cr)
+                meta.url = meta.url or cr.get("URL")
+                meta.journal = meta.journal or _join_first(cr.get("container-title"))
+                meta.publisher = meta.publisher or cr.get("publisher")
+                meta.raw["crossref"] = cr
+
+            if oa:
+                meta.raw["openalex"] = oa
+                meta.url = meta.url or oa.get("doi") or oa.get("id")
+                if oa.get("primary_location"):
+                    url = oa["primary_location"].get("pdf_url")
+                    if url:
+                        meta.oa_urls.append(url)
+                for loc in oa.get("locations", []) or []:
+                    if loc.get("pdf_url"):
+                        meta.oa_urls.append(loc["pdf_url"])
+                ids = oa.get("ids") or {}
+                if ids.get("pmid"):
+                    meta.pmid = str(ids["pmid"]).rsplit("/", 1)[-1]
+                if ids.get("pmcid"):
+                    meta.pmcid = str(ids["pmcid"]).rsplit("/", 1)[-1]
+
+            if up:
+                meta.raw["unpaywall"] = up
+                best = up.get("best_oa_location") or {}
+                for key in ("url_for_pdf", "url"):
+                    if best.get(key):
+                        meta.oa_urls.append(best[key])
+                for loc in up.get("oa_locations") or []:
+                    for key in ("url_for_pdf", "url"):
+                        if loc.get(key):
+                            meta.oa_urls.append(loc[key])
+
+        arxiv_id = extract_arxiv_id(q.url) or extract_arxiv_id(q.title)
+        if arxiv_id:
+            try:
+                ar = await arxiv_lookup(self.fetcher, arxiv_id)
+                if ar:
+                    meta.arxiv_id = ar["arxiv_id"]
+                    meta.title = meta.title or ar["title"]
+                    meta.authors = meta.authors or ar["authors"]
+                    meta.year = meta.year or ar["year"]
+                    if ar.get("pdf_url"):
+                        meta.oa_urls.append(ar["pdf_url"])
+                    meta.raw["arxiv"] = ar
+            except Exception as e:
+                log.debug("arxiv lookup failed: %s", e)
 
         # de-dupe oa urls preserving order
         seen: set[str] = set()
