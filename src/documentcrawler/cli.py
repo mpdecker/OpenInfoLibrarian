@@ -44,6 +44,10 @@ app = typer.Typer(help="Find and download academic documents from many sources."
                   no_args_is_help=True, add_completion=False)
 db_app = typer.Typer(help="Database maintenance and optimization tools.")
 app.add_typer(db_app, name="db", rich_help_panel="Maintenance")
+webhooks_app = typer.Typer(help="Manage HTTP Webhook notification endpoints.")
+app.add_typer(webhooks_app, name="webhooks", rich_help_panel="Services")
+pdf_app = typer.Typer(help="PDF inspection and structure tools.")
+app.add_typer(pdf_app, name="pdf", rich_help_panel="Maintenance")
 
 
 @app.callback(invoke_without_command=True)
@@ -885,6 +889,97 @@ def db_optimize_fts_command(ctx: typer.Context) -> None:
     with _loaded(ctx.obj["config_path"]) as (cfg, db):
         db.optimize_fts()
         console.print("[green]Successfully optimized FTS5 full-text index.[/green]")
+
+
+@db_app.command(name="status")
+def db_status_command(ctx: typer.Context) -> None:
+    """Display database integrity status, size metrics, and table counts."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        stats = db.get_db_stats()
+        console.print(f"[bold cyan]Database Status:[/bold cyan] {stats['path']}")
+        console.print(f"  Size:       {stats['size_mb']} MB ({stats['size_bytes']} bytes)")
+        console.print("  Integrity:  [green]OK[/green]" if stats["integrity_ok"] else "  Integrity:  [red]FAILED[/red]")
+        console.print(f"  Total Docs: {stats['total_documents']}")
+        console.print(f"  Attempts:   {stats['total_attempts']}")
+        console.print(f"  Webhooks:   {stats['total_webhooks']}")
+
+
+@webhooks_app.command(name="add")
+def webhook_add(
+    ctx: typer.Context,
+    url: str = typer.Argument(..., help="Webhook HTTP target URL."),
+    events: str = typer.Option("*", "--events", "-e", help="Comma-separated event names or '*'."),
+    secret: str | None = typer.Option(None, "--secret", "-s", help="Optional HMAC signature secret."),
+) -> None:
+    """Register a new HTTP Webhook target."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        webhook_id = db.add_webhook(url, events=events, secret=secret)
+        console.print(f"[green]Registered webhook #{webhook_id}[/green] ({url})")
+
+
+@webhooks_app.command(name="list")
+def webhook_list(ctx: typer.Context) -> None:
+    """List all registered HTTP Webhooks."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        hooks = db.list_webhooks()
+        if not hooks:
+            console.print("[yellow]No webhooks registered.[/yellow]")
+            return
+        table = Table(title=f"Registered Webhooks ({len(hooks)})")
+        table.add_column("id", justify="right")
+        table.add_column("url")
+        table.add_column("events")
+        table.add_column("secret")
+        table.add_column("created_at")
+        for h in hooks:
+            table.add_row(
+                str(h["id"]),
+                h["url"],
+                h["events"],
+                "[cyan]configured[/cyan]" if h["secret"] else "[dim]none[/dim]",
+                h["created_at"],
+            )
+        console.print(table)
+
+
+@webhooks_app.command(name="delete")
+def webhook_delete(
+    ctx: typer.Context,
+    webhook_id: int = typer.Argument(..., help="ID of webhook to delete."),
+) -> None:
+    """Delete a registered HTTP Webhook."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        ok = db.delete_webhook(webhook_id)
+        if ok:
+            console.print(f"[green]Deleted webhook #{webhook_id}.[/green]")
+        else:
+            console.print(f"[red]Webhook #{webhook_id} not found.[/red]")
+            raise typer.Exit(1)
+
+
+@pdf_app.command(name="inspect")
+def pdf_inspect_command(
+    ctx: typer.Context,
+    path: Path = typer.Argument(..., help="Path to PDF file."),
+) -> None:
+    """Inspect PDF document properties, page count, catalog metadata, and text sample."""
+    from documentcrawler.pdf import inspect_pdf
+
+    try:
+        info = inspect_pdf(path)
+    except Exception as e:
+        raise CLIError(f"Failed to inspect PDF {path}: {e}") from e
+
+    console.print(f"[bold cyan]PDF Inspection:[/bold cyan] {info['file_path']}")
+    console.print(f"  Size:     {info['file_size_kb']} KB ({info['file_size_bytes']} bytes)")
+    console.print(f"  Version:  PDF-{info['pdf_version']}")
+    console.print(f"  Pages:    {info['page_count']}")
+    if info.get("metadata"):
+        console.print("  Metadata:")
+        for k, v in info["metadata"].items():
+            console.print(f"    {k}: {v}")
+    if info.get("text_sample"):
+        console.print(f"  Text Sample: {info['text_sample'][:200]}...")
 
 
 def _status_color(s: DocStatus) -> str:

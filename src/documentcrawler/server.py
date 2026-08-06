@@ -83,6 +83,20 @@ class HealthResponse(BaseModel):
     db: str
 
 
+class WebhookRequest(BaseModel):
+    url: str
+    events: str = "*"
+    secret: str | None = None
+
+
+class WebhookResponse(BaseModel):
+    id: int
+    url: str
+    events: str
+    secret: str | None = None
+    created_at: str
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str
@@ -140,6 +154,8 @@ def create_app(config_path: Path) -> FastAPI:
             {"name": "Queue", "description": "Queue status and item management endpoints."},
             {"name": "Export", "description": "Bibliography export endpoints (BibTeX, RIS, CSV, JSONL)."},
             {"name": "Streaming", "description": "Real-time Server-Sent Events (SSE) stream."},
+            {"name": "Webhooks", "description": "Webhook notification endpoints."},
+            {"name": "Database", "description": "Database maintenance and metrics endpoints."},
         ],
     )  # --- middleware ----------------------------------------------------------
 
@@ -355,6 +371,48 @@ def create_app(config_path: Path) -> FastAPI:
                 return
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.post("/webhooks", response_model=WebhookResponse, tags=["Webhooks"])
+    async def create_webhook(body: WebhookRequest) -> WebhookResponse:
+        """Register a new HTTP Webhook endpoint."""
+        db: Database = app.state.db
+        try:
+            webhook_id = db.add_webhook(body.url, events=body.events, secret=body.secret)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        hooks = db.list_webhooks()
+        hook = next((h for h in hooks if h["id"] == webhook_id), None)
+        if not hook:
+            raise HTTPException(status_code=500, detail="Failed to create webhook")
+        return WebhookResponse(**hook)
+
+    @app.get("/webhooks", response_model=list[WebhookResponse], tags=["Webhooks"])
+    async def list_webhooks() -> list[WebhookResponse]:
+        """List all registered HTTP Webhook endpoints."""
+        db: Database = app.state.db
+        return [WebhookResponse(**h) for h in db.list_webhooks()]
+
+    @app.delete("/webhooks/{webhook_id}", tags=["Webhooks"])
+    async def delete_webhook(webhook_id: int) -> dict[str, bool]:
+        """Delete a registered HTTP Webhook endpoint."""
+        db: Database = app.state.db
+        ok = db.delete_webhook(webhook_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"Webhook #{webhook_id} not found")
+        return {"ok": True}
+
+    @app.get("/db/stats", tags=["Database"])
+    async def db_stats() -> dict[str, Any]:
+        """Get database health, file size, and metrics statistics."""
+        db: Database = app.state.db
+        return db.get_db_stats()
+
+    @app.post("/db/vacuum", tags=["Database"])
+    async def db_vacuum() -> dict[str, bool]:
+        """Vacuum and optimize database structure."""
+        db: Database = app.state.db
+        db.vacuum()
+        return {"ok": True}
 
     return app
 

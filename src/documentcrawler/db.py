@@ -195,6 +195,7 @@ class Database:
             (4, self._migrate_4),
             (5, self._migrate_5),
             (6, self._migrate_6),
+            (7, self._migrate_7),
         ]
 
         for version, fn in migrations:
@@ -203,6 +204,20 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (version,)
                 )
+
+    def _migrate_7(self) -> None:
+        """Add webhooks table."""
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS webhooks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                events TEXT NOT NULL DEFAULT '*',
+                secret TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
 
     def _migrate_1(self) -> None:
         """Add `extra` column to documents if missing."""
@@ -810,6 +825,60 @@ class Database:
                     seen.add(text.lower())
 
         return suggestions
+
+    # -------------------------------------------------------------------------
+    # Webhooks & Diagnostics
+    # -------------------------------------------------------------------------
+
+    def add_webhook(self, url: str, events: str = "*", secret: str | None = None) -> int:
+        """Register a new webhook URL."""
+        cur = self._conn.execute(
+            """
+            INSERT INTO webhooks (url, events, secret, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (url, events, secret, _utcnow_iso()),
+        )
+        return int(cur.lastrowid)
+
+    def list_webhooks(self) -> list[dict[str, Any]]:
+        """List registered webhooks."""
+        rows = self._conn.execute(
+            "SELECT * FROM webhooks ORDER BY id ASC"
+        ).fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "url": r["url"],
+                "events": r["events"],
+                "secret": r["secret"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def delete_webhook(self, webhook_id: int) -> bool:
+        """Delete a registered webhook by ID."""
+        cur = self._conn.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
+        return cur.rowcount > 0
+
+    def get_db_stats(self) -> dict[str, Any]:
+        """Return comprehensive DB metrics (file size, document counts, table row counts)."""
+        file_bytes = self.path.stat().st_size if self.path.exists() else 0
+        doc_counts = self.status_summary()
+        attempts_count = int(self._conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
+        webhooks_count = int(self._conn.execute("SELECT COUNT(*) FROM webhooks").fetchone()[0])
+        integrity = self.integrity_check()
+        return {
+            "path": str(self.path),
+            "size_bytes": file_bytes,
+            "size_mb": round(file_bytes / (1024 * 1024), 2),
+            "integrity_ok": integrity,
+            "documents": doc_counts,
+            "total_documents": sum(doc_counts.values()),
+            "total_attempts": attempts_count,
+            "total_webhooks": webhooks_count,
+        }
 
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
