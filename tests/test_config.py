@@ -19,7 +19,9 @@ def test_default_config_validates_without_errors():
 
 def test_missing_download_dir_warns(tmp_path):
     cfg = Config()
-    cfg.general.download_dir = Path("COM1:")
+    file_as_dir = tmp_path / "file.txt"
+    file_as_dir.write_text("not a directory")
+    cfg.general.download_dir = file_as_dir / "child"
     with pytest.raises(ConfigError):
         cfg.validate()
 
