@@ -1,7 +1,3 @@
-"""Tests for config validation."""
-
-from pathlib import Path
-
 import pytest
 
 from documentcrawler.config import (
