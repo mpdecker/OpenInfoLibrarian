@@ -12,13 +12,19 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from documentcrawler import __version__
 from documentcrawler.config import Config, load_config
 from documentcrawler.db import Database
 from documentcrawler.errors import DocumentCrawlerError
+from documentcrawler.exporters import (
+    export_bibtex,
+    export_csv,
+    export_jsonl,
+    export_ris,
+)
 from documentcrawler.models import DocStatus, DocumentQuery
 from documentcrawler.pipeline import Pipeline
 
@@ -295,6 +301,34 @@ def create_app(config_path: Path) -> FastAPI:
             failed=counts.get("failed", 0),
             items=items,
         )
+
+    @app.get("/export")
+    async def export_documents(
+        format: str = "bibtex",
+        status: str | None = None,
+    ) -> Response:
+        """Export bibliography records in BibTeX, RIS, CSV, or JSONL format over HTTP."""
+        db: Database = app.state.db
+        st = DocStatus(status) if status else None
+        docs = db.list_documents(status=st)
+
+        fmt = format.lower().strip()
+        if fmt == "bibtex":
+            content = export_bibtex(docs)
+            media = "application/x-bibtex"
+        elif fmt == "ris":
+            content = export_ris(docs)
+            media = "application/x-research-info-systems"
+        elif fmt == "csv":
+            content = export_csv(docs)
+            media = "text/csv"
+        elif fmt == "jsonl":
+            content = export_jsonl(docs)
+            media = "application/x-jsonlines"
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+
+        return Response(content=content, media_type=media)
 
     @app.get("/events")
     async def stream_events(request: Request) -> StreamingResponse:
