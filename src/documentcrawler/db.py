@@ -582,14 +582,9 @@ class Database:
             return []
         try:
             cur = self._conn.execute(
-                """
-                SELECT d.* FROM documents d
-                JOIN documents_fts fts ON d.id = fts.rowid
-                WHERE documents_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (query.strip(), limit),
+                "SELECT d.* FROM documents d JOIN documents_fts fts ON d.id = fts.rowid "
+                "WHERE fts MATCH ? ORDER BY rank LIMIT ?",
+                (query, limit),
             )
             return [_row_to_document(r) for r in cur.fetchall()]
         except sqlite3.Error:

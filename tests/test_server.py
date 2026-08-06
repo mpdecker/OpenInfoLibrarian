@@ -86,6 +86,14 @@ def test_acquire_invalid_body_returns_error_structure(client):
     assert "error" in data or "detail" in data
 
 
+def test_export_endpoint(client):
+    client.post("/acquire", json={"doi": "10.1000/export.test", "title": "Export Test Paper"})
+    resp = client.get("/export?format=bibtex")
+    assert resp.status_code == 200
+    assert "Export Test Paper" in resp.text
+    assert "application/x-bibtex" in resp.headers["content-type"]
+
+
 def test_events_stream_connects(client):
     with client.stream("GET", "/events") as resp:
         assert resp.status_code == 200

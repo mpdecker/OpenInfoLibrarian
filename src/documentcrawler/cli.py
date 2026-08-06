@@ -843,6 +843,40 @@ def diagnostics(ctx: typer.Context) -> None:
         console.print(table)
 
 
+@app.command(name="search-fts", rich_help_panel="Queue")
+def search_fts_command(
+    ctx: typer.Context,
+    query: str = typer.Argument(..., help="Full-text search query string."),
+    limit: int = typer.Option(50, "--limit", "-l", help="Maximum results to return."),
+) -> None:
+    """Execute instant SQLite FTS5 full-text search across titles, authors, DOIs, and ISBNs."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        rows = db.search_fts(query, limit=limit)
+        if not rows:
+            console.print(f"[yellow]No documents found matching FTS query: '{query}'[/yellow]")
+            return
+
+        table = Table(title=f"FTS Search Results ({len(rows)})")
+        table.add_column("id", justify="right")
+        table.add_column("status")
+        table.add_column("doi")
+        table.add_column("title")
+        table.add_column("authors")
+        table.add_column("year")
+
+        for r in rows:
+            title = (r.title or "")[:60]
+            table.add_row(
+                str(r.id),
+                _status_color(r.status),
+                r.doi or "",
+                title,
+                ", ".join(r.authors[:2]),
+                str(r.year or ""),
+            )
+        console.print(table)
+
+
 def _status_color(s: DocStatus) -> str:
     color = {
         DocStatus.PENDING: "yellow",
