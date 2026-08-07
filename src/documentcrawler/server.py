@@ -508,6 +508,39 @@ def create_app(config_path: Path) -> FastAPI:
         result = db.checkpoint_wal()
         return {"ok": True, **result}
 
+    @app.get("/documents/{doc_id}/annotation", tags=["Annotations"])
+    async def get_document_annotation(doc_id: int) -> dict[str, Any]:
+        """Get custom reading notes, rating, and status for a document."""
+        db: Database = app.state.db
+        annotation = db.get_annotation(doc_id)
+        if not annotation:
+            raise HTTPException(status_code=404, detail=f"No annotation found for document #{doc_id}")
+        return annotation
+
+    @app.put("/documents/{doc_id}/annotation", tags=["Annotations"])
+    async def put_document_annotation(
+        doc_id: int,
+        rating: int | None = None,
+        review_status: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update reading notes, rating, and status for a document."""
+        from documentcrawler.annotations import annotate_document
+
+        db: Database = app.state.db
+        try:
+            return annotate_document(db, doc_id, rating=rating, review_status=review_status, notes=notes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/db/audit-health", tags=["Database"])
+    async def get_db_audit_health() -> dict[str, Any]:
+        """Audit database metadata quality, completeness percentages, and health scores."""
+        from documentcrawler.audit import run_metadata_health_audit
+
+        db: Database = app.state.db
+        return run_metadata_health_audit(db)
+
     return app
 
 

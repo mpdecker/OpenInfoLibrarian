@@ -197,6 +197,7 @@ class Database:
             (6, self._migrate_6),
             (7, self._migrate_7),
             (8, self._migrate_8),
+            (9, self._migrate_9),
         ]
 
         for version, fn in migrations:
@@ -205,6 +206,21 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (version,)
                 )
+
+    def _migrate_9(self) -> None:
+        """Add annotations table for notes, ratings, and review status flags."""
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS annotations (
+                doc_id INTEGER PRIMARY KEY,
+                rating INTEGER DEFAULT 0,
+                review_status TEXT DEFAULT 'unread',
+                notes TEXT DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (doc_id) REFERENCES documents(id) ON DELETE CASCADE
+            )
+            """
+        )
 
     def _migrate_8(self) -> None:
         """Add FTS5 virtual table for indexing PDF text body content."""
@@ -1045,6 +1061,92 @@ class Database:
             "busy": int(row[0]) if row else 0,
             "log_pages": int(row[1]) if row else 0,
             "checkpointed_pages": int(row[2]) if row else 0,
+        }
+
+    def set_annotation(
+        self,
+        doc_id: int,
+        *,
+        rating: int | None = None,
+        review_status: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Insert or update custom annotation notes, rating, and status for a document."""
+        current = self.get_annotation(doc_id) or {"rating": 0, "review_status": "unread", "notes": ""}
+        new_rating = rating if rating is not None else current["rating"]
+        new_status = review_status if review_status is not None else current["review_status"]
+        new_notes = notes if notes is not None else current["notes"]
+
+        self._conn.execute(
+            """
+            INSERT INTO annotations (doc_id, rating, review_status, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id) DO UPDATE SET
+                rating = excluded.rating,
+                review_status = excluded.review_status,
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """,
+            (doc_id, new_rating, new_status, new_notes, _utcnow_iso()),
+        )
+        return {
+            "doc_id": doc_id,
+            "rating": new_rating,
+            "review_status": new_status,
+            "notes": new_notes,
+            "updated_at": _utcnow_iso(),
+        }
+
+    def get_annotation(self, doc_id: int) -> dict[str, Any] | None:
+        """Fetch custom annotation notes for a document."""
+        row = self._conn.execute("SELECT * FROM annotations WHERE doc_id = ?", (doc_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "doc_id": int(row["doc_id"]),
+            "rating": int(row["rating"]),
+            "review_status": row["review_status"],
+            "notes": row["notes"],
+            "updated_at": row["updated_at"],
+        }
+
+    def audit_metadata_health(self) -> dict[str, Any]:
+        """Perform a comprehensive audit of metadata quality and health metrics."""
+        docs = self.list_documents(limit=10000)
+        total = len(docs)
+        if total == 0:
+            return {
+                "total_documents": 0,
+                "has_doi_pct": 0.0,
+                "has_year_pct": 0.0,
+                "has_authors_pct": 0.0,
+                "has_pdf_file_pct": 0.0,
+                "health_score": 100.0,
+            }
+
+        with_doi = sum(1 for d in docs if d.doi)
+        with_year = sum(1 for d in docs if d.year)
+        with_authors = sum(1 for d in docs if d.authors)
+        with_pdf = sum(1 for d in docs if d.file_path and os.path.exists(d.file_path))
+
+        doi_pct = round((with_doi / total) * 100, 1)
+        year_pct = round((with_year / total) * 100, 1)
+        authors_pct = round((with_authors / total) * 100, 1)
+        pdf_pct = round((with_pdf / total) * 100, 1)
+
+        health_score = round((doi_pct * 0.35) + (authors_pct * 0.25) + (year_pct * 0.20) + (pdf_pct * 0.20), 1)
+
+        return {
+            "total_documents": total,
+            "with_doi": with_doi,
+            "with_year": with_year,
+            "with_authors": with_authors,
+            "with_pdf": with_pdf,
+            "has_doi_pct": doi_pct,
+            "has_year_pct": year_pct,
+            "has_authors_pct": authors_pct,
+            "has_pdf_file_pct": pdf_pct,
+            "health_score": health_score,
         }
 
 
