@@ -451,6 +451,13 @@ def create_app(config_path: Path) -> FastAPI:
             ],
         }
 
+    @app.post("/db/clean", tags=["Database"])
+    async def db_clean() -> dict[str, Any]:
+        """Scan and sanitize HTML artifacts and formatting from document metadata."""
+        db: Database = app.state.db
+        count = db.clean_metadata()
+        return {"ok": True, "cleaned_records": count}
+
     return app
 
 

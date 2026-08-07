@@ -932,6 +932,37 @@ class Database:
 
         return self.get(primary_id) or primary
 
+    def clean_metadata(self) -> int:
+        """Scan and sanitize document titles, author lists, and keywords across the database."""
+        from documentcrawler.cleaner import clean_document_metadata
+
+        docs = self.list_documents(limit=10000)
+        cleaned_count = 0
+        with self.transaction():
+            for doc in docs:
+                cleaned = clean_document_metadata(doc)
+                if (
+                    cleaned["title"] != doc.title
+                    or cleaned["authors"] != doc.authors
+                    or cleaned["keywords"] != doc.keywords
+                ):
+                    self._conn.execute(
+                        """
+                        UPDATE documents
+                           SET title = ?, authors = ?, keywords = ?, updated_at = ?
+                         WHERE id = ?
+                        """,
+                        (
+                            cleaned["title"],
+                            json.dumps(cleaned["authors"]),
+                            json.dumps(cleaned["keywords"]),
+                            _utcnow_iso(),
+                            doc.id,
+                        ),
+                    )
+                    cleaned_count += 1
+        return cleaned_count
+
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
     return DocumentRow(
