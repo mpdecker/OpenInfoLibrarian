@@ -58,3 +58,17 @@ class WebhookDispatcher:
                     failed += 1
 
         return {"sent": sent, "failed": failed}
+
+
+def verify_webhook_signature(secret: str, body: str | bytes, signature_header: str) -> bool:
+    """Verify an incoming HMAC-SHA256 webhook signature header (format: sha256=<hex_digest>)."""
+    if not secret or not signature_header:
+        return False
+    sig_parts = signature_header.split("=", 1)
+    if len(sig_parts) != 2 or sig_parts[0].lower() != "sha256":
+        return False
+
+    expected_sig = sig_parts[1].strip()
+    payload_bytes = body.encode("utf-8") if isinstance(body, str) else body
+    computed_sig = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed_sig, expected_sig)

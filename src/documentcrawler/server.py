@@ -458,6 +458,20 @@ def create_app(config_path: Path) -> FastAPI:
         count = db.clean_metadata()
         return {"ok": True, "cleaned_records": count}
 
+    @app.get("/search/pdf-content", tags=["Search"])
+    async def search_pdf_content(q: str, limit: int = 50) -> dict[str, Any]:
+        """Full-text search inside downloaded PDF document body contents."""
+        db: Database = app.state.db
+        docs = db.search_pdf_content(q, limit=limit)
+        return {"query": q, "count": len(docs), "documents": [d.model_dump(mode="json") for d in docs]}
+
+    @app.post("/db/rerank", tags=["Database"])
+    async def db_rerank() -> dict[str, Any]:
+        """Re-calculate and re-rank document priorities dynamically."""
+        db: Database = app.state.db
+        count = db.rerank_queue()
+        return {"ok": True, "updated_documents": count}
+
     return app
 
 
