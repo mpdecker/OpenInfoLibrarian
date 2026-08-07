@@ -415,23 +415,40 @@ def create_app(config_path: Path) -> FastAPI:
         return {"ok": True}
 
     @app.post("/db/dedupe", tags=["Database"])
-    async def db_dedupe(threshold: float = 0.85, merge: bool = False) -> dict[str, Any]:
-        """Find and optionally merge duplicate document records."""
+    async def db_dedupe(
+        threshold: float = 0.85,
+        strategy: str = "smart",
+        merge: bool = False,
+    ) -> dict[str, Any]:
+        """Find and optionally merge duplicate document records using exact or fuzzy strategy."""
         from documentcrawler.dedupe import find_duplicate_clusters
 
         db: Database = app.state.db
-        clusters = find_duplicate_clusters(db, threshold=threshold)
+        clusters = find_duplicate_clusters(db, threshold=threshold, strategy=strategy)  # type: ignore[arg-type]
         merged_count = 0
         if merge and clusters:
             for cluster in clusters:
-                primary = cluster[0]
-                secondaries = [d.id for d in cluster[1:]]
-                db.merge_documents(primary.id, secondaries)
-                merged_count += len(secondaries)
+                primary = cluster["primary"]
+                secondary_ids = [d.id for d in cluster["secondaries"]]
+                db.merge_documents(primary.id, secondary_ids)
+                merged_count += len(secondary_ids)
+
         return {
+            "strategy": strategy,
+            "threshold": threshold,
             "clusters_found": len(clusters),
-            "duplicates_count": sum(len(c) - 1 for c in clusters),
+            "duplicates_count": sum(len(c["secondaries"]) for c in clusters),
             "merged_count": merged_count,
+            "clusters": [
+                {
+                    "match_reason": c["match_reason"],
+                    "confidence": c["confidence"],
+                    "primary_id": c["primary"].id,
+                    "primary_title": c["primary"].title,
+                    "secondary_ids": [d.id for d in c["secondaries"]],
+                }
+                for c in clusters
+            ],
         }
 
     return app

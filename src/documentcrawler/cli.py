@@ -908,32 +908,41 @@ def db_status_command(ctx: typer.Context) -> None:
 def db_dedupe_command(
     ctx: typer.Context,
     threshold: float = typer.Option(0.85, "--threshold", "-t", help="Title similarity threshold (0.5 - 1.0)."),
+    strategy: str = typer.Option("smart", "--strategy", "-s", help="Strategy: exact, fuzzy, or smart."),
     merge: bool = typer.Option(False, "--merge", "-m", help="Automatically merge duplicate clusters."),
 ) -> None:
     """Find and merge duplicate document records."""
     from documentcrawler.dedupe import find_duplicate_clusters
 
     with _loaded(ctx.obj["config_path"]) as (cfg, db):
-        clusters = find_duplicate_clusters(db, threshold=threshold)
+        clusters = find_duplicate_clusters(db, threshold=threshold, strategy=strategy)  # type: ignore[arg-type]
         if not clusters:
             console.print("[green]No duplicate document clusters found.[/green]")
             return
 
-        console.print(f"[bold cyan]Found {len(clusters)} duplicate cluster(s):[/bold cyan]")
+        console.print(f"[bold cyan]Found {len(clusters)} duplicate cluster(s) via [{strategy}]:[/bold cyan]")
         for idx, cluster in enumerate(clusters, 1):
-            title_sample = (cluster[0].title or "Untitled")[:40]
-            console.print(f"  Cluster #{idx} ({len(cluster)} docs): Primary #{cluster[0].id} '{title_sample}'")
-            for doc in cluster[1:]:
+            primary = cluster["primary"]
+            secondaries = cluster["secondaries"]
+            reason = cluster["match_reason"]
+            confidence = cluster["confidence"]
+
+            title_sample = (primary.title or "Untitled")[:40]
+            console.print(
+                f"  Cluster #{idx} [{reason} conf={confidence:.2f}]: "
+                f"Primary #{primary.id} '{title_sample}'"
+            )
+            for doc in secondaries:
                 dup_title = (doc.title or "Untitled")[:40]
-                console.print(f"    - Duplicate #{doc.id} '{dup_title}'")
+                console.print(f"    - Secondary #{doc.id} '{dup_title}'")
 
         if merge:
             total_merged = 0
             for cluster in clusters:
-                primary = cluster[0]
-                secondaries = [d.id for d in cluster[1:]]
-                db.merge_documents(primary.id, secondaries)
-                total_merged += len(secondaries)
+                primary = cluster["primary"]
+                secondary_ids = [d.id for d in cluster["secondaries"]]
+                db.merge_documents(primary.id, secondary_ids)
+                total_merged += len(secondary_ids)
             console.print(f"[green]Successfully merged {total_merged} duplicate records.[/green]")
         else:
             console.print("[dim]Use --merge to consolidate duplicate records into primary documents.[/dim]")
