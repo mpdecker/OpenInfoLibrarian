@@ -880,6 +880,58 @@ class Database:
             "total_webhooks": webhooks_count,
         }
 
+    def merge_documents(self, primary_id: int, secondary_ids: list[int]) -> DocumentRow:
+        """Consolidate metadata and attempt history from secondary_ids into primary_id and delete secondary records."""
+        primary = self.get(primary_id)
+        if primary is None:
+            raise ValueError(f"Primary document #{primary_id} not found")
+
+        secondaries = [self.get(sid) for sid in secondary_ids if sid != primary_id]
+        secondaries = [s for s in secondaries if s is not None]
+
+        if not secondaries:
+            return primary
+
+        # Consolidate metadata
+        doi = primary.doi or next((s.doi for s in secondaries if s.doi), None)
+        title = primary.title or next((s.title for s in secondaries if s.title), None)
+        authors = list(dict.fromkeys(primary.authors + [a for s in secondaries for a in s.authors]))
+        year = primary.year or next((s.year for s in secondaries if s.year), None)
+        isbn = primary.isbn or next((s.isbn for s in secondaries if s.isbn), None)
+        url = primary.url or next((s.url for s in secondaries if s.url), None)
+        keywords = list(dict.fromkeys(primary.keywords + [k for s in secondaries for k in s.keywords]))
+        file_path = primary.file_path or next((s.file_path for s in secondaries if s.file_path), None)
+        sha256 = primary.sha256 or next((s.sha256 for s in secondaries if s.sha256), None)
+
+        status = primary.status
+        if status != DocStatus.DONE:
+            for s in secondaries:
+                if s.status == DocStatus.DONE:
+                    status = DocStatus.DONE
+                    break
+
+        with self.transaction():
+            self.update_metadata(
+                primary_id,
+                doi=doi,
+                title=title,
+                authors=authors,
+                year=year,
+                isbn=isbn,
+                url=url,
+            )
+            self.set_status(primary_id, status, file_path=file_path, sha256=sha256)
+
+            for sid in secondary_ids:
+                if sid != primary_id:
+                    self._conn.execute(
+                        "UPDATE attempts SET document_id = ? WHERE document_id = ?",
+                        (primary_id, sid),
+                    )
+                    self._conn.execute("DELETE FROM documents WHERE id = ?", (sid,))
+
+        return self.get(primary_id) or primary
+
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
     return DocumentRow(

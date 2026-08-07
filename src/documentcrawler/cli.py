@@ -904,6 +904,41 @@ def db_status_command(ctx: typer.Context) -> None:
         console.print(f"  Webhooks:   {stats['total_webhooks']}")
 
 
+@db_app.command(name="dedupe")
+def db_dedupe_command(
+    ctx: typer.Context,
+    threshold: float = typer.Option(0.85, "--threshold", "-t", help="Title similarity threshold (0.5 - 1.0)."),
+    merge: bool = typer.Option(False, "--merge", "-m", help="Automatically merge duplicate clusters."),
+) -> None:
+    """Find and merge duplicate document records."""
+    from documentcrawler.dedupe import find_duplicate_clusters
+
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        clusters = find_duplicate_clusters(db, threshold=threshold)
+        if not clusters:
+            console.print("[green]No duplicate document clusters found.[/green]")
+            return
+
+        console.print(f"[bold cyan]Found {len(clusters)} duplicate cluster(s):[/bold cyan]")
+        for idx, cluster in enumerate(clusters, 1):
+            title_sample = (cluster[0].title or "Untitled")[:40]
+            console.print(f"  Cluster #{idx} ({len(cluster)} docs): Primary #{cluster[0].id} '{title_sample}'")
+            for doc in cluster[1:]:
+                dup_title = (doc.title or "Untitled")[:40]
+                console.print(f"    - Duplicate #{doc.id} '{dup_title}'")
+
+        if merge:
+            total_merged = 0
+            for cluster in clusters:
+                primary = cluster[0]
+                secondaries = [d.id for d in cluster[1:]]
+                db.merge_documents(primary.id, secondaries)
+                total_merged += len(secondaries)
+            console.print(f"[green]Successfully merged {total_merged} duplicate records.[/green]")
+        else:
+            console.print("[dim]Use --merge to consolidate duplicate records into primary documents.[/dim]")
+
+
 @webhooks_app.command(name="add")
 def webhook_add(
     ctx: typer.Context,

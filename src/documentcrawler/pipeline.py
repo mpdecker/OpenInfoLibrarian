@@ -18,6 +18,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from documentcrawler.circuit_breaker import CircuitBreaker
 from documentcrawler.config import Config
 from documentcrawler.db import Database
 from documentcrawler.fetcher import Fetcher
@@ -69,6 +70,7 @@ class Pipeline:
         cancel_event: asyncio.Event | None = None,
         per_doc_timeout_s: float | None = None,
         dry_run: bool = False,
+        circuit_breaker: CircuitBreaker | None = None,
     ):
         self.config = config
         self.db = db
@@ -77,6 +79,7 @@ class Pipeline:
         self.cancel_event = cancel_event
         self.per_doc_timeout_s = per_doc_timeout_s
         self.dry_run = dry_run
+        self.circuit_breaker = circuit_breaker or CircuitBreaker()
 
         if legit_only:
             sources_override = ["open_access", "arxiv", "pubmed", "doaj"]
@@ -254,6 +257,10 @@ class Pipeline:
                 if self.cancel_event is not None and self.cancel_event.is_set():
                     return False, None
 
+                if self.circuit_breaker.is_open(source.name):
+                    log.debug("source %s circuit breaker is open; skipping", source.name)
+                    continue
+
                 cfg = self.config.source(source.name)
                 ctx = SourceContext(query=query, metadata=metadata, fetcher=fetcher,
                                     options=cfg.options)
@@ -261,6 +268,7 @@ class Pipeline:
                 try:
                     candidates = await source.search(ctx)
                 except Exception as e:
+                    self.circuit_breaker.record_failure(source.name, is_rate_limit="429" in str(e))
                     log.debug("source %s search error: %s", source.name, e)
                     self._log_failure(doc.id, source.name, None,
                                       f"search: {e}", error_kind=ErrorKind.TRANSIENT.value)
@@ -367,6 +375,7 @@ class Pipeline:
                             finished_at=_utcnow(),
                         ),
                     )
+                    self.circuit_breaker.record_success(source.name)
                     return True, source.name
 
             if self.dry_run:
