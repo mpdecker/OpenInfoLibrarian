@@ -48,6 +48,8 @@ webhooks_app = typer.Typer(help="Manage HTTP Webhook notification endpoints.")
 app.add_typer(webhooks_app, name="webhooks", rich_help_panel="Services")
 pdf_app = typer.Typer(help="PDF inspection and structure tools.")
 app.add_typer(pdf_app, name="pdf", rich_help_panel="Maintenance")
+openapi_app = typer.Typer(help="Export OpenAPI specification schemas.")
+app.add_typer(openapi_app, name="openapi", rich_help_panel="Services")
 
 
 @app.callback(invoke_without_command=True)
@@ -344,6 +346,25 @@ def run(
         console.print(table)
         if summary.failed and summary.succeeded == 0:
             raise DocumentCrawlerError("All documents failed")
+
+
+@app.command(name="run-batch", rich_help_panel="Run")
+def run_batch_cmd(
+    ctx: typer.Context,
+    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent document pipelines."),
+    only_failed: bool = typer.Option(False, "--only-failed", help="Only retry failed documents."),
+) -> None:
+    """Process pending or failed documents concurrently in batch mode."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        docs = db.pending_or_failed(only_failed=only_failed)
+        if not docs:
+            console.print("[yellow]Nothing to do.[/yellow]")
+            return
+
+        pipeline = Pipeline(cfg, db, workers=concurrency)
+        results = asyncio.run(pipeline.process_batch(docs, max_concurrency=concurrency))
+        succeeded = sum(1 for d in results if d.status == DocStatus.DONE)
+        console.print(f"[green]Batch processing completed:[/green] {succeeded}/{len(results)} succeeded.")
 
 
 @app.command(rich_help_panel="Run")
@@ -948,6 +969,14 @@ def db_dedupe_command(
             console.print("[dim]Use --merge to consolidate duplicate records into primary documents.[/dim]")
 
 
+@db_app.command(name="clean")
+def db_clean_command(ctx: typer.Context) -> None:
+    """Sanitize HTML tags and format author names/titles in database."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        count = db.clean_metadata()
+        console.print(f"[green]Successfully cleaned metadata for {count} document(s).[/green]")
+
+
 @webhooks_app.command(name="add")
 def webhook_add(
     ctx: typer.Context,
@@ -1024,6 +1053,24 @@ def pdf_inspect_command(
             console.print(f"    {k}: {v}")
     if info.get("text_sample"):
         console.print(f"  Text Sample: {info['text_sample'][:200]}...")
+
+
+@openapi_app.command(name="export")
+def openapi_export(
+    ctx: typer.Context,
+    output: Path | None = typer.Option(None, "--output", "-o", help="File path to save OpenAPI spec."),
+    format: str = typer.Option("json", "--format", "-f", help="Output format: json or yaml."),
+) -> None:
+    """Export OpenAPI 3.0 specification for DocumentCrawler REST API."""
+    from documentcrawler.openapi import export_openapi_schema
+
+    content = export_openapi_schema(ctx.obj["config_path"], fmt=format)
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(content, encoding="utf-8")
+        console.print(f"[green]OpenAPI spec exported to {output}[/green]")
+    else:
+        console.print(content)
 
 
 def _status_color(s: DocStatus) -> str:
