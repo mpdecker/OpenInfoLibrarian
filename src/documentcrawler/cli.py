@@ -904,12 +904,53 @@ def search_fts_command(
         console.print(table)
 
 
+@app.command(name="search-pdf", rich_help_panel="Queue")
+def search_pdf_command(
+    ctx: typer.Context,
+    query: str = typer.Argument(..., help="Full-text query string to search inside downloaded PDFs."),
+    limit: int = typer.Option(50, "--limit", "-l", help="Max documents to return."),
+) -> None:
+    """Full-text search inside downloaded PDF text contents."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        docs = db.search_pdf_content(query, limit=limit)
+        if not docs:
+            console.print(f"[yellow]No PDF content matching query: '{query}'[/yellow]")
+            return
+
+        table = Table(title=f"PDF Content Hits ({len(docs)})")
+        table.add_column("id", justify="right")
+        table.add_column("title")
+        table.add_column("doi")
+        table.add_column("file")
+        for d in docs:
+            table.add_row(str(d.id), (d.title or "")[:60], d.doi or "", d.file_path or "")
+        console.print(table)
+
+
 @db_app.command(name="optimize-fts")
 def db_optimize_fts_command(ctx: typer.Context) -> None:
     """Optimize SQLite FTS5 index structure to merge B-tree segments."""
     with _loaded(ctx.obj["config_path"]) as (cfg, db):
         db.optimize_fts()
         console.print("[green]Successfully optimized FTS5 full-text index.[/green]")
+
+
+@db_app.command(name="index-pdfs")
+def db_index_pdfs_command(ctx: typer.Context) -> None:
+    """Extract and index text content from all downloaded PDFs into FTS5."""
+    from documentcrawler.pdf_fts import index_all_downloaded_pdfs
+
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        count = index_all_downloaded_pdfs(db)
+        console.print(f"[green]Successfully indexed PDF text content for {count} document(s).[/green]")
+
+
+@db_app.command(name="rerank")
+def db_rerank_command(ctx: typer.Context) -> None:
+    """Re-calculate dynamic processing priorities for all pending queue items."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        count = db.rerank_queue()
+        console.print(f"[green]Successfully re-ranked processing priority for {count} document(s).[/green]")
 
 
 @db_app.command(name="status")

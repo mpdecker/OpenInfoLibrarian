@@ -196,6 +196,7 @@ class Database:
             (5, self._migrate_5),
             (6, self._migrate_6),
             (7, self._migrate_7),
+            (8, self._migrate_8),
         ]
 
         for version, fn in migrations:
@@ -204,6 +205,14 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (version,)
                 )
+
+    def _migrate_8(self) -> None:
+        """Add FTS5 virtual table for indexing PDF text body content."""
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS pdf_content_fts USING fts5("
+                "doc_id UNINDEXED, content)"
+            )
 
     def _migrate_7(self) -> None:
         """Add webhooks table."""
@@ -962,6 +971,50 @@ class Database:
                     )
                     cleaned_count += 1
         return cleaned_count
+
+    def index_pdf_content(self, doc_id: int, content: str) -> None:
+        """Index PDF body text into the pdf_content_fts virtual table."""
+        if not content.strip():
+            return
+        with contextlib.suppress(sqlite3.Error):
+            self._conn.execute(
+                "DELETE FROM pdf_content_fts WHERE doc_id = ?", (str(doc_id),)
+            )
+            self._conn.execute(
+                "INSERT INTO pdf_content_fts(doc_id, content) VALUES(?, ?)",
+                (str(doc_id), content.strip()),
+            )
+
+    def search_pdf_content(self, query: str, limit: int = 50) -> list[DocumentRow]:
+        """Full-text search inside PDF body contents using FTS5."""
+        if not query.strip():
+            return []
+        try:
+            cur = self._conn.execute(
+                "SELECT d.* FROM documents d JOIN pdf_content_fts fts ON d.id = CAST(fts.doc_id AS INTEGER) "
+                "WHERE fts.content MATCH ? ORDER BY rank LIMIT ?",
+                (query, limit),
+            )
+            return [_row_to_document(r) for r in cur.fetchall()]
+        except sqlite3.Error:
+            return []
+
+    def rerank_queue(self) -> int:
+        """Dynamically re-calculate priority scores for all pending or failed documents in queue."""
+        from documentcrawler.priority import calculate_priority_score
+
+        docs = self.pending_or_failed()
+        updated_count = 0
+        with self.transaction():
+            for doc in docs:
+                new_priority = calculate_priority_score(doc)
+                if new_priority != doc.priority:
+                    self._conn.execute(
+                        "UPDATE documents SET priority = ?, updated_at = ? WHERE id = ?",
+                        (new_priority, _utcnow_iso(), doc.id),
+                    )
+                    updated_count += 1
+        return updated_count
 
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
