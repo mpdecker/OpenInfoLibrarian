@@ -83,3 +83,13 @@ def _idx_to_suffix(idx: int) -> str:
         if idx < 0:
             break
     return "".join(reversed(result))
+
+
+def generate_unique_citekeys(docs: list[DocumentRow]) -> dict[int, str]:
+    """Generate collision-free BibTeX citekeys for a list of documents. Returns doc_id -> citekey map."""
+    existing_keys: set[str] = set()
+    out: dict[int, str] = {}
+    for doc in docs:
+        key = generate_citekey(doc, existing_keys=existing_keys)
+        out[doc.id] = key
+    return out

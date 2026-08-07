@@ -472,6 +472,23 @@ def create_app(config_path: Path) -> FastAPI:
         count = db.rerank_queue()
         return {"ok": True, "updated_documents": count}
 
+    @app.post("/db/auto-tag", tags=["Database"])
+    async def db_auto_tag() -> dict[str, Any]:
+        """Analyze documents and append auto-classified subject tags."""
+        db: Database = app.state.db
+        count = db.auto_tag_documents()
+        return {"ok": True, "tagged_documents": count}
+
+    @app.get("/metrics", tags=["Telemetry"], response_class=Response)
+    async def get_metrics() -> Response:
+        """Export system metrics in standard Prometheus text format."""
+        from fastapi.responses import Response
+        from documentcrawler.metrics import generate_prometheus_metrics
+
+        db: Database = app.state.db
+        metrics_text = generate_prometheus_metrics(db)
+        return Response(content=metrics_text, media_type="text/plain")
+
     return app
 
 

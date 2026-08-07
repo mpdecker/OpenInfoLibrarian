@@ -1018,6 +1018,14 @@ def db_clean_command(ctx: typer.Context) -> None:
         console.print(f"[green]Successfully cleaned metadata for {count} document(s).[/green]")
 
 
+@db_app.command(name="auto-tag")
+def db_auto_tag_command(ctx: typer.Context) -> None:
+    """Analyze document metadata and assign standardized academic subject category tags."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        count = db.auto_tag_documents()
+        console.print(f"[green]Successfully auto-tagged subject categories for {count} document(s).[/green]")
+
+
 @webhooks_app.command(name="add")
 def webhook_add(
     ctx: typer.Context,
