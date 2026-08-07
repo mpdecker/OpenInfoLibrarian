@@ -414,6 +414,26 @@ def create_app(config_path: Path) -> FastAPI:
         db.vacuum()
         return {"ok": True}
 
+    @app.post("/db/dedupe", tags=["Database"])
+    async def db_dedupe(threshold: float = 0.85, merge: bool = False) -> dict[str, Any]:
+        """Find and optionally merge duplicate document records."""
+        from documentcrawler.dedupe import find_duplicate_clusters
+
+        db: Database = app.state.db
+        clusters = find_duplicate_clusters(db, threshold=threshold)
+        merged_count = 0
+        if merge and clusters:
+            for cluster in clusters:
+                primary = cluster[0]
+                secondaries = [d.id for d in cluster[1:]]
+                db.merge_documents(primary.id, secondaries)
+                merged_count += len(secondaries)
+        return {
+            "clusters_found": len(clusters),
+            "duplicates_count": sum(len(c) - 1 for c in clusters),
+            "merged_count": merged_count,
+        }
+
     return app
 
 

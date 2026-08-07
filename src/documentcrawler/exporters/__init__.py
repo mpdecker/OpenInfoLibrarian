@@ -43,10 +43,21 @@ def _make_cite_key(doc: DocumentRow, template: str | None = None) -> str:
 
 
 def export_bibtex(docs: Sequence[DocumentRow], citekey_template: str | None = None) -> str:
-    """Format DocumentRow instances as a BibTeX bibliography string."""
+    """Format DocumentRow instances as a BibTeX bibliography string with unique citekeys."""
+    from documentcrawler.citation import generate_citekey
+
     entries: list[str] = []
+    seen_keys: set[str] = set()
+
     for doc in docs:
-        key = _make_cite_key(doc, template=citekey_template)
+        if citekey_template:
+            key = _make_cite_key(doc, template=citekey_template)
+            while key in seen_keys:
+                key = f"{key}_dup"
+            seen_keys.add(key)
+        else:
+            key = generate_citekey(doc, existing_keys=seen_keys)
+
         entry_type = "article" if doc.doi else "book" if doc.isbn else "misc"
         lines = [f"@{entry_type}{{{key},"]
         if doc.title:
