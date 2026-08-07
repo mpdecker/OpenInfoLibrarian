@@ -1054,6 +1054,40 @@ def db_auto_tag_command(ctx: typer.Context) -> None:
         console.print(f"[green]Successfully auto-tagged subject categories for {count} document(s).[/green]")
 
 
+@db_app.command(name="annotate")
+def db_annotate_command(
+    ctx: typer.Context,
+    doc_id: int = typer.Argument(..., help="Document ID to annotate."),
+    rating: int | None = typer.Option(None, "--rating", "-r", help="Star rating (0-5)."),
+    status: str | None = typer.Option(None, "--status", "-s", help="Review status: unread, reading, reviewed, archived."),
+    notes: str | None = typer.Option(None, "--notes", "-n", help="Custom text reading notes."),
+) -> None:
+    """Attach or update custom reading notes, review status, and star rating for a document."""
+    from documentcrawler.annotations import annotate_document
+
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        try:
+            res = annotate_document(db, doc_id, rating=rating, review_status=status, notes=notes)
+            console.print(f"[green]Successfully annotated document #{doc_id}:[/green] rating={res['rating']}★ status='{res['review_status']}'")
+        except ValueError as e:
+            raise CLIError(str(e)) from e
+
+
+@db_app.command(name="audit-health")
+def db_audit_health_command(ctx: typer.Context) -> None:
+    """Audit document metadata completeness, health scores, and file link integrity."""
+    from documentcrawler.audit import run_metadata_health_audit
+
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        res = run_metadata_health_audit(db)
+        console.print(f"[bold cyan]Database Metadata Quality Audit:[/bold cyan] {res['total_documents']} total document(s)")
+        console.print(f"  Health Score: [bold green]{res['health_score']}%[/bold green]")
+        console.print(f"  DOI Coverage: {res['has_doi_pct']}% ({res['with_doi']}/{res['total_documents']})")
+        console.print(f"  Year Coverage: {res['has_year_pct']}% ({res['with_year']}/{res['total_documents']})")
+        console.print(f"  Author Coverage: {res['has_authors_pct']}% ({res['with_authors']}/{res['total_documents']})")
+        console.print(f"  Local PDF Link: {res['has_pdf_file_pct']}% ({res['with_pdf']}/{res['total_documents']})")
+
+
 @webhooks_app.command(name="add")
 def webhook_add(
     ctx: typer.Context,
