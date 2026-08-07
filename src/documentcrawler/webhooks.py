@@ -19,12 +19,15 @@ log = get_logger(__name__)
 class WebhookDispatcher:
     """Asynchronously dispatches webhook events to registered HTTP endpoints."""
 
-    def __init__(self, db: Database, timeout_s: float = 10.0):
+    def __init__(self, db: Database, timeout_s: float = 10.0, max_retries: int = 3):
         self.db = db
         self.timeout_s = timeout_s
+        self.max_retries = max_retries
 
     async def dispatch(self, event: str, payload: dict[str, Any]) -> dict[str, int]:
-        """Dispatch event payload to all matching registered webhooks."""
+        """Dispatch event payload to all matching registered webhooks with exponential backoff retries."""
+        import asyncio
+
         webhooks = self.db.list_webhooks()
         if not webhooks:
             return {"sent": 0, "failed": 0}
@@ -40,21 +43,26 @@ class WebhookDispatcher:
                 if events_pattern != "*" and event not in [e.strip() for e in events_pattern.split(",")]:
                     continue
 
-                headers = {"Content-Type": "application/json", "User-Agent": "OpenInfoLibrarian-Webhook/0.3.3"}
+                headers = {"Content-Type": "application/json", "User-Agent": "OpenInfoLibrarian-Webhook/0.3.8"}
                 secret = hook.get("secret")
                 if secret:
                     sig = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
                     headers["X-Webhook-Signature"] = f"sha256={sig}"
 
-                try:
-                    res = await client.post(hook["url"], content=body, headers=headers)
-                    if res.is_success:
-                        sent += 1
-                    else:
-                        log.warning("Webhook POST to %s returned status %d", hook["url"], res.status_code)
-                        failed += 1
-                except Exception as e:
-                    log.warning("Webhook dispatch failed for %s: %s", hook["url"], e)
+                success = False
+                for attempt in range(1, self.max_retries + 1):
+                    try:
+                        res = await client.post(hook["url"], content=body, headers=headers)
+                        if res.is_success:
+                            sent += 1
+                            success = True
+                            break
+                        log.warning("Webhook attempt %d/%d to %s returned status %d", attempt, self.max_retries, hook["url"], res.status_code)
+                    except Exception as e:
+                        log.warning("Webhook attempt %d/%d failed for %s: %s", attempt, self.max_retries, hook["url"], e)
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(0.01 * (2 ** (attempt - 1)))
+                if not success:
                     failed += 1
 
         return {"sent": sent, "failed": failed}
