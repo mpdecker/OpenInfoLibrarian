@@ -836,6 +836,34 @@ def export(
             console.print(content)
 
 
+@app.command(name="export-reading-list", rich_help_panel="Queue management")
+def export_reading_list_cmd(
+    ctx: typer.Context,
+    format: str = typer.Option("markdown", "--format", "-f", help="Export format: markdown or html."),
+    output: Path | None = typer.Option(None, "--output", "-o", help="File path to save reading list report."),
+) -> None:
+    """Export formatted Markdown or HTML reading list report for completed documents."""
+    from documentcrawler.reading_list import generate_reading_list
+
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        docs = db.list_documents(status=DocStatus.DONE, limit=10000)
+        content = generate_reading_list(docs, fmt=format)
+        if output:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(content, encoding="utf-8")
+            console.print(f"[green]Exported reading list ({len(docs)} documents) to {output}[/green]")
+        else:
+            console.print(content)
+
+
+@db_app.command(name="checkpoint")
+def db_checkpoint_command(ctx: typer.Context) -> None:
+    """Truncate SQLite Write-Ahead Log (WAL) and optimize index structures."""
+    with _loaded(ctx.obj["config_path"]) as (cfg, db):
+        res = db.checkpoint_wal()
+        console.print(f"[green]Successfully truncated WAL log and compacted database ({res['checkpointed_pages']} pages checkpointed).[/green]")
+
+
 @app.command(rich_help_panel="Maintenance")
 def diagnostics(ctx: typer.Context) -> None:
     """Display diagnostic health & telemetry metrics across all search and download sources."""

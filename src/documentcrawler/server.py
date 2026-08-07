@@ -489,6 +489,25 @@ def create_app(config_path: Path) -> FastAPI:
         metrics_text = generate_prometheus_metrics(db)
         return Response(content=metrics_text, media_type="text/plain")
 
+    @app.get("/export/reading-list", tags=["Exports"], response_class=Response)
+    async def export_reading_list(format: str = "html") -> Response:
+        """Export formatted reading list report for completed documents."""
+        from fastapi.responses import Response
+        from documentcrawler.reading_list import generate_reading_list
+
+        db: Database = app.state.db
+        docs = db.list_documents(status=DocStatus.DONE, limit=10000)
+        content = generate_reading_list(docs, fmt=format)
+        media_type = "text/html" if format.lower() in ("html", "htm") else "text/markdown"
+        return Response(content=content, media_type=media_type)
+
+    @app.post("/db/checkpoint", tags=["Database"])
+    async def db_checkpoint() -> dict[str, Any]:
+        """Truncate SQLite Write-Ahead Log (WAL) and optimize index structures."""
+        db: Database = app.state.db
+        result = db.checkpoint_wal()
+        return {"ok": True, **result}
+
     return app
 
 

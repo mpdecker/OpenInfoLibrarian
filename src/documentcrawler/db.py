@@ -1037,6 +1037,16 @@ class Database:
                     tagged_count += 1
         return tagged_count
 
+    def checkpoint_wal(self) -> dict[str, Any]:
+        """Truncate the SQLite Write-Ahead Log (WAL) and optimize index structures."""
+        row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        self.vacuum()
+        return {
+            "busy": int(row[0]) if row else 0,
+            "log_pages": int(row[1]) if row else 0,
+            "checkpointed_pages": int(row[2]) if row else 0,
+        }
+
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
     return DocumentRow(
