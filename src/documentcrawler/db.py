@@ -1016,6 +1016,27 @@ class Database:
                     updated_count += 1
         return updated_count
 
+    def auto_tag_documents(self) -> int:
+        """Analyze documents and append classified subject tags into document keywords."""
+        from documentcrawler.tagger import classify_document_topics
+
+        docs = self.list_documents(limit=10000)
+        tagged_count = 0
+        with self.transaction():
+            for doc in docs:
+                topics = classify_document_topics(doc)
+                if not topics:
+                    continue
+                existing_kw = list(doc.keywords)
+                new_kw = list(dict.fromkeys(existing_kw + topics))
+                if new_kw != existing_kw:
+                    self._conn.execute(
+                        "UPDATE documents SET keywords = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(new_kw), _utcnow_iso(), doc.id),
+                    )
+                    tagged_count += 1
+        return tagged_count
+
 
 def _row_to_document(row: sqlite3.Row) -> DocumentRow:
     return DocumentRow(
