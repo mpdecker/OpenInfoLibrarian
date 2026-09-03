@@ -6,6 +6,34 @@ sources. Open-access sources (Unpaywall, OpenAlex, arXiv, PubMed Central, DOAJ)
 are enabled by default; shadow-library sources (Sci-Hub, Anna's Archive, LibGen,
 Z-Library) are off by default and must be opted into via `config.toml`.
 
+## Status
+
+| | |
+| --- | --- |
+| Default branch | `main` |
+| Remote | `mpdecker/DogTheLibrarian` |
+| Language | Python (CLI + optional desktop GUI + HTTP server) |
+| Latest release line | v0.3.9 |
+
+> `pyproject.toml` still declares `version = "0.2.0"` while the release branches
+> have advanced to **v0.3.9** - the manifest version is stale and worth
+> reconciling.
+
+Also embedded as `services/crawler-service` inside the
+[`SecondBrain`](../SecondBrain) research platform.
+
+## Added across the v0.3.x line
+
+| Area | Capability |
+| --- | --- |
+| Retrieval | Concurrent batch runner; priority reranker; unique citekey resolver |
+| Search | PDF text-content FTS5 indexing |
+| Metadata | Metadata cleaner; metadata health audit scanner; academic topic auto-tagger |
+| Dedup | Deduplication engine with multi-field similarity scoring and smart primary selection |
+| Library | Document annotations manager; reading-list exporter |
+| Integration | Resilient webhooks with verification; OpenAPI spec exporter |
+| Ops | Prometheus metrics exporter; WAL checkpoint engine |
+
 ## Features
 
 - Batch import from CSV, BibTeX, RIS, or a plain DOI list.
