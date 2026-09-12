@@ -13,6 +13,17 @@ min_pdf_bytes     = 20480
 pipeline_timeout_s = 300
 log_level         = "INFO"
 
+[server]
+host = "127.0.0.1"
+port = 8000
+# Required for every request when set. Generate with e.g.
+# `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+# api_key = ""
+# When true, disables /db/vacuum, /db/dedupe, /db/clean, /db/rerank,
+# /db/auto-tag, and /db/checkpoint regardless of api_key — for any
+# instance reachable from the public internet.
+public_demo = false
+
 [fetcher]
 # Per-host rate limits in requests / second. Sensible defaults.
 default_rate          = 2.0

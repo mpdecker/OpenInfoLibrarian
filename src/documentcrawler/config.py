@@ -85,6 +85,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8000
     api_key: str | None = None
+    public_demo: bool = False
 
 
 @dataclass
@@ -235,6 +236,8 @@ def _coerce_server(raw: dict[str, Any]) -> ServerConfig:
         cfg.port = int(raw["port"])
     if "api_key" in raw:
         cfg.api_key = str(raw["api_key"]) if raw["api_key"] else None
+    if "public_demo" in raw:
+        cfg.public_demo = bool(raw["public_demo"])
     return cfg
 
 

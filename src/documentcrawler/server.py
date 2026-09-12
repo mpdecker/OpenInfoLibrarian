@@ -159,10 +159,22 @@ def create_app(config_path: Path) -> FastAPI:
         ],
     )  # --- middleware ----------------------------------------------------------
 
+    # Endpoints that mutate or maintain the database rather than just
+    # querying it. Disabled outright on any deployment where
+    # server.public_demo is set, regardless of API key, since a portfolio
+    # demo has no business exposing vacuum/dedupe/clean/rerank/checkpoint.
+    DEMO_DISABLED_PATHS = {
+        "/db/vacuum", "/db/dedupe", "/db/clean", "/db/rerank",
+        "/db/auto-tag", "/db/checkpoint",
+    }
+
     @app.middleware("http")
     async def log_and_auth_requests(request: Request, call_next: Any) -> Any:
         start = time.monotonic()
-        expected_key = getattr(cfg.server, "api_key", None) if hasattr(cfg, "server") else None
+        server_cfg = getattr(cfg, "server", None)
+        expected_key = getattr(server_cfg, "api_key", None) if server_cfg else None
+        public_demo = bool(getattr(server_cfg, "public_demo", False)) if server_cfg else False
+
         if expected_key:
             provided_key = request.headers.get("x-api-key")
             auth_header = request.headers.get("authorization", "")
@@ -173,6 +185,12 @@ def create_app(config_path: Path) -> FastAPI:
                     status_code=401,
                     content={"error": {"code": "unauthorized", "message": "Invalid or missing API key"}},
                 )
+
+        if public_demo and request.url.path in DEMO_DISABLED_PATHS:
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"code": "disabled_in_demo", "message": "This endpoint is disabled on the public demo instance."}},
+            )
 
         response = await call_next(request)
         elapsed_ms = (time.monotonic() - start) * 1000
