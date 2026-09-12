@@ -2364,6 +2364,11 @@ class App:
             ttk.Label(grid, text=v, wraplength=420, justify="left").grid(
                 row=i, column=1, sticky="w", pady=2)
 
+        kofi = ttk.Label(about, text="Support this project on Ko-fi",
+                          foreground="#0b5fff", cursor="hand2")
+        kofi.pack(anchor="w", pady=(16, 0))
+        kofi.bind("<Button-1>", lambda _e: webbrowser.open("https://ko-fi.com/matthieudecker"))
+
         # --- Shortcuts tab ---
         sf = ttk.Frame(nb, padding=12)
         nb.add(sf, text="Shortcuts")
