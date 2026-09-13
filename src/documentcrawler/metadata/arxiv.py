@@ -14,7 +14,7 @@ from documentcrawler.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-_ARXIV_API_BASE = "http://export.arxiv.org/api/query"
+_ARXIV_API_BASE = "https://export.arxiv.org/api/query"
 _ARXIV_ID_RE = re.compile(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)?(\d{4}\.\d{4,5}(?:v\d+)?|[a-z\-]+/\d{7})", re.IGNORECASE)
 
 
