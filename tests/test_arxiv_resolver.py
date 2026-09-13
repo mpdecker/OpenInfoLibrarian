@@ -17,7 +17,7 @@ def test_extract_arxiv_id():
 @pytest.mark.asyncio
 async def test_arxiv_lookup_mocked(httpx_mock):
     httpx_mock.add_response(
-        url="http://export.arxiv.org/api/query?id_list=1706.03762",
+        url="https://export.arxiv.org/api/query?id_list=1706.03762",
         text="""<?xml version="1.0" encoding="UTF-8"?>
         <feed xmlns="http://www.w3.org/2005/Atom">
           <entry>
