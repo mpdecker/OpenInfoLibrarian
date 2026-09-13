@@ -145,7 +145,12 @@ def create_app(config_path: Path) -> FastAPI:
 
     app = FastAPI(
         title="DocumentCrawler Acquisition Server",
-        description="REST & SSE API server for automated document acquisition, metadata enrichment, and bibliography exports.",
+        description=(
+            "REST & SSE API server for automated document acquisition, metadata "
+            "enrichment, and bibliography exports.\n\n"
+            "If this is useful to you, support development at "
+            "[ko-fi.com/matthieudecker](https://ko-fi.com/matthieudecker)."
+        ),
         version=__version__,
         lifespan=lifespan,
         openapi_tags=[

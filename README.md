@@ -323,6 +323,11 @@ the current defaults at the top.
 - `Settings` is disabled while a run is in progress to prevent the
   config from being changed mid-flight.
 
+## Support
+
+If this tool is useful to you, you can support development at
+[ko-fi.com/matthieudecker](https://ko-fi.com/matthieudecker).
+
 ## Legal note
 
 This tool queries both legitimate open-access services and shadow libraries.
