@@ -248,6 +248,7 @@ class Pipeline:
                     "pmcid": metadata.pmcid,
                     "journal": metadata.journal,
                     "publisher": metadata.publisher,
+                    "enrich_providers": metadata.enrich_providers,
                 },
             )
             doc = self.db.get(doc.id) or doc

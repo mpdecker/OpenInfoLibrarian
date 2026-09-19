@@ -2,6 +2,7 @@ import pytest
 
 from documentcrawler.config import (
     Config,
+    load_config,
     write_default_config,
 )
 from documentcrawler.errors import ConfigError
@@ -79,9 +80,13 @@ def test_valid_config_no_warnings(tmp_path):
     assert not any("request_timeout" in w for w in warnings)
 
 
-def test_config_reload_fresh_copy():
-    cfg1 = Config()
-    cfg2 = Config.reload(None)
+def test_config_reload_fresh_copy(tmp_path):
+    # Reload against an explicit path in tmp_path: reload(None) would read
+    # ./config.toml, which developers commonly have (it's the documented
+    # serve/init location) and which would make this test env-sensitive.
+    cfg_path = tmp_path / "config.toml"
+    cfg1 = load_config(cfg_path)
+    cfg2 = Config.reload(cfg_path)
     assert cfg1.general.workers == cfg2.general.workers
 
 

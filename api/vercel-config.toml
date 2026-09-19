@@ -1,0 +1,57 @@
+# Config for the public Vercel demo deployment.
+# api_key comes from the DOCUMENTCRAWLER_API_KEY env var, not this file.
+
+[general]
+download_dir      = "/tmp/downloads"
+db_path           = "/tmp/crawler.db"
+filename_template = "{first_author_last}_{year}_{title_slug}.{ext}"
+workers           = 1
+request_timeout_s = 20
+max_retries       = 2
+min_pdf_bytes     = 20480
+pipeline_timeout_s = 30
+log_level         = "INFO"
+
+[server]
+public_demo = true
+
+[fetcher]
+default_rate       = 2.0
+"api.crossref.org" = 50.0
+"api.openalex.org" = 10.0
+"api.unpaywall.org" = 10.0
+"export.arxiv.org" = 1.0
+"eutils.ncbi.nlm.nih.gov" = 3.0
+
+[fetcher.user_agents]
+list = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+]
+
+[metadata.unpaywall]
+email = "contact@drownedwoods.com"
+
+[metadata.crossref]
+mailto = "contact@drownedwoods.com"
+
+[metadata.openalex]
+mailto = "contact@drownedwoods.com"
+
+[sources]
+order = ["open_access", "arxiv", "pubmed", "doaj"]
+
+[sources.open_access]
+enabled = true
+
+[sources.arxiv]
+enabled = true
+
+[sources.pubmed]
+enabled = true
+
+[sources.doaj]
+enabled = true
+
+# Shadow-library sources are not listed in [sources] at all here, so they
+# default to disabled (SourceConfig.enabled = False) — never reachable on
+# this deployment regardless of what a client requests.

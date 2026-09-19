@@ -93,6 +93,7 @@ class DocumentRow(BaseModel):
     error: str | None = None
     timeout_s: int | None = None
     priority: int = 0
+    enriched: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
