@@ -16,3 +16,4 @@ config.toml
 downloads/
 .DS_Store
 .kilo/
+.vercel

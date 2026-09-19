@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from documentcrawler import __version__
 from documentcrawler.config import Config, load_config
@@ -27,6 +30,7 @@ from documentcrawler.exporters import (
 )
 from documentcrawler.models import DocStatus, DocumentQuery
 from documentcrawler.pipeline import Pipeline
+from documentcrawler.utils.logging import setup_logging
 
 log = logging.getLogger("documentcrawler.server")
 
@@ -67,6 +71,7 @@ class JobResponse(BaseModel):
     file_path: str | None = None
     sha256: str | None = None
     error: str | None = None
+    enriched: dict[str, Any] | None = None
 
 
 class QueueSummary(BaseModel):
@@ -111,6 +116,10 @@ GRACEFUL_SHUTDOWN_S = 30
 
 def create_app(config_path: Path) -> FastAPI:
     cfg = load_config(config_path)
+    # Apply the configured level here (not lazily via get_logger, which
+    # defaults to INFO) so [general].log_level actually takes effect on
+    # serverless hosts where nothing else configures logging.
+    setup_logging(cfg.general.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -121,7 +130,14 @@ def create_app(config_path: Path) -> FastAPI:
         shutdown_event = asyncio.Event()
         app.state._shutdown_event = shutdown_event
 
-        worker_task = asyncio.create_task(_background_worker(app))
+        # public_demo instances (serverless) process documents inline via
+        # /acquire/sync within the request itself — there's no long-running
+        # process for a background poller to run in between requests, and
+        # starting one anyway would race with /acquire/sync over the same
+        # queue rows.
+        worker_task: asyncio.Task[None] | None = None
+        if not cfg.server.public_demo:
+            worker_task = asyncio.create_task(_background_worker(app))
         app.state._worker_task = worker_task
 
         log.info("Server started on %s", cfg.general.db_path)
@@ -130,16 +146,17 @@ def create_app(config_path: Path) -> FastAPI:
         finally:
             log.info("Server shutting down — signalling worker to drain")
             shutdown_event.set()
-            try:
-                await asyncio.wait_for(worker_task, timeout=GRACEFUL_SHUTDOWN_S)
-            except TimeoutError:
-                log.warning(
-                    "Worker did not finish within %ds; forcing cancel",
-                    GRACEFUL_SHUTDOWN_S,
-                )
-                worker_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await worker_task
+            if worker_task is not None:
+                try:
+                    await asyncio.wait_for(worker_task, timeout=GRACEFUL_SHUTDOWN_S)
+                except TimeoutError:
+                    log.warning(
+                        "Worker did not finish within %ds; forcing cancel",
+                        GRACEFUL_SHUTDOWN_S,
+                    )
+                    worker_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await worker_task
             db.close()
             log.info("Server stopped")
 
@@ -167,6 +184,10 @@ def create_app(config_path: Path) -> FastAPI:
         "/db/vacuum", "/db/dedupe", "/db/clean", "/db/rerank",
         "/db/auto-tag", "/db/checkpoint",
     }
+    # Webhook registration is likewise demo-disabled: with no background
+    # worker running (see lifespan), no webhook could ever fire, so
+    # accepting registrations would only be misleading and a spam surface.
+    DEMO_DISABLED_PREFIXES = ("/webhooks",)
 
     @app.middleware("http")
     async def log_and_auth_requests(request: Request, call_next: Any) -> Any:
@@ -186,7 +207,10 @@ def create_app(config_path: Path) -> FastAPI:
                     content={"error": {"code": "unauthorized", "message": "Invalid or missing API key"}},
                 )
 
-        if public_demo and request.url.path in DEMO_DISABLED_PATHS:
+        if public_demo and (
+            request.url.path in DEMO_DISABLED_PATHS
+            or request.url.path.startswith(DEMO_DISABLED_PREFIXES)
+        ):
             return JSONResponse(
                 status_code=403,
                 content={"error": {"code": "disabled_in_demo", "message": "This endpoint is disabled on the public demo instance."}},
@@ -202,11 +226,29 @@ def create_app(config_path: Path) -> FastAPI:
 
     # --- exception handlers -------------------------------------------------
 
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    # Registered against the *Starlette* base class on purpose: the router
+    # itself raises starlette HTTPExceptions (404 unknown path, 405 wrong
+    # method), which are parents of fastapi.HTTPException — a handler for
+    # the subclass never sees them, and clients would get FastAPI's bare
+    # {"detail": ...} body instead of the envelope every other error uses.
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"code": "http_error", "message": exc.detail}},
+            content={"error": {"code": "http_error", "message": str(exc.detail)}},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "validation_error",
+                    "message": "Request body failed validation.",
+                    "details": jsonable_encoder(exc.errors()),
+                }
+            },
         )
 
     @app.exception_handler(DocumentCrawlerError)
@@ -226,6 +268,31 @@ def create_app(config_path: Path) -> FastAPI:
 
     # --- endpoints -----------------------------------------------------------
 
+    @app.get("/", tags=["Health"])
+    async def root() -> dict[str, Any]:
+        """Service landing: what this is and where the docs live."""
+        info: dict[str, Any] = {
+            "service": "DocumentCrawler Acquisition Server",
+            "version": __version__,
+            "documentation": "/docs",
+            "openapi": "/openapi.json",
+            "endpoints": {
+                "health": "/health",
+                "acquire_sync": "/acquire/sync",
+                "job": "/jobs/{id}",
+                "queue": "/queue",
+                "export": "/export?format=bibtex|ris|csv|jsonl",
+            },
+        }
+        if cfg.server.public_demo:
+            info["mode"] = "public_demo"
+            info["notes"] = [
+                "Queueing endpoints (/acquire, /acquire/batch) are disabled; use /acquire/sync.",
+                "Database-maintenance endpoints under /db/* (except stats and audit-health) are disabled.",
+                "Storage is ephemeral serverless /tmp state — do not rely on /queue or /jobs persisting between calls.",
+            ]
+        return info
+
     @app.get("/health", response_model=HealthResponse, tags=["Health"])
     async def health() -> HealthResponse:
         db: Database = app.state.db
@@ -238,6 +305,11 @@ def create_app(config_path: Path) -> FastAPI:
     @app.post("/acquire", response_model=AcquireResponse, tags=["Acquisition"])
     async def acquire(body: AcquireRequest, request: Request,
                       timeout: int | None = None) -> AcquireResponse:
+        if app.state.config.server.public_demo:
+            raise HTTPException(
+                status_code=400,
+                detail="This instance has no background worker to process a queue — use /acquire/sync instead.",
+            )
         query = DocumentQuery(
             doi=body.doi,
             title=body.title,
@@ -275,8 +347,81 @@ def create_app(config_path: Path) -> FastAPI:
             title=doc.title,
         )
 
+    @app.post("/acquire/sync", response_model=JobResponse, tags=["Acquisition"])
+    async def acquire_sync(body: AcquireRequest, timeout: int | None = None) -> JobResponse:
+        """Resolve and acquire a single document inline, returning the final
+        result directly instead of queuing it for the background worker.
+
+        For deployments with no long-running process to poll a queue (e.g.
+        serverless): runs the pipeline within the request and blocks until
+        it finishes or the timeout elapses. Not for batch use — one document
+        per call, capped at a short timeout to fit typical serverless
+        request limits.
+        """
+        query = DocumentQuery(
+            doi=body.doi,
+            title=body.title,
+            authors=body.authors,
+            year=body.year,
+            isbn=body.isbn,
+            keywords=body.keywords,
+            url=body.url,
+        )
+        if query.is_empty():
+            raise HTTPException(status_code=400,
+                                detail="No DOI, title, ISBN, or URL provided")
+
+        timeout_s = timeout if timeout is not None else 25
+        if not (5 <= timeout_s <= 25):
+            raise HTTPException(status_code=400,
+                                detail="timeout must be between 5 and 25 seconds for /acquire/sync")
+
+        db: Database = app.state.db
+        try:
+            doc_id = db.add_query(query, timeout_s=timeout_s)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        doc = db.get(doc_id)
+        if doc is None:
+            raise HTTPException(status_code=500, detail="Failed to create document")
+
+        cfg: Config = app.state.config
+        cancel_event = asyncio.Event()
+        pipeline = Pipeline(
+            cfg, db, workers=1, cancel_event=cancel_event, per_doc_timeout_s=timeout_s,
+        )
+        try:
+            await asyncio.wait_for(pipeline.run([doc]), timeout=timeout_s + 5)
+        except TimeoutError:
+            cancel_event.set()
+            db.set_status(doc.id, DocStatus.FAILED, error="acquire/sync: request timed out")
+
+        result = db.get(doc_id)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Document disappeared during acquisition")
+
+        return JobResponse(
+            id=result.id,
+            status=result.status.value,
+            doi=result.doi,
+            title=result.title,
+            authors=result.authors,
+            year=result.year,
+            isbn=result.isbn,
+            file_path=result.file_path,
+            sha256=result.sha256,
+            error=result.error,
+            enriched=result.enriched,
+        )
+
     @app.post("/acquire/batch", response_model=AcquireBatchResponse, tags=["Acquisition"])
     async def acquire_batch(requests: list[AcquireRequest]) -> AcquireBatchResponse:
+        if app.state.config.server.public_demo:
+            raise HTTPException(
+                status_code=400,
+                detail="This instance has no background worker to process a queue — use /acquire/sync instead.",
+            )
         if not requests:
             raise HTTPException(status_code=400, detail="Batch request list cannot be empty")
         if len(requests) > 500:
@@ -318,6 +463,7 @@ def create_app(config_path: Path) -> FastAPI:
             file_path=doc.file_path,
             sha256=doc.sha256,
             error=doc.error,
+            enriched=doc.enriched,
         )
 
     @app.get("/queue", response_model=QueueSummary, tags=["Queue"])
@@ -513,10 +659,17 @@ def create_app(config_path: Path) -> FastAPI:
         from fastapi.responses import Response
         from documentcrawler.reading_list import generate_reading_list
 
+        fmt = format.lower().strip()
+        if fmt not in ("html", "htm", "md", "markdown"):
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported format: %s (expected html, htm, md, or markdown)" % format,
+            )
+
         db: Database = app.state.db
         docs = db.list_documents(status=DocStatus.DONE, limit=10000)
-        content = generate_reading_list(docs, fmt=format)
-        media_type = "text/html" if format.lower() in ("html", "htm") else "text/markdown"
+        content = generate_reading_list(docs, fmt=fmt)
+        media_type = "text/html" if fmt in ("html", "htm") else "text/markdown"
         return Response(content=content, media_type=media_type)
 
     @app.post("/db/checkpoint", tags=["Database"])

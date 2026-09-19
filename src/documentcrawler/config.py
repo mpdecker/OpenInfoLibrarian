@@ -238,6 +238,11 @@ def _coerce_server(raw: dict[str, Any]) -> ServerConfig:
         cfg.api_key = str(raw["api_key"]) if raw["api_key"] else None
     if "public_demo" in raw:
         cfg.public_demo = bool(raw["public_demo"])
+    # Env var wins over the file so the real key never has to live in
+    # committed config — set it as a host secret instead.
+    env_key = os.environ.get("DOCUMENTCRAWLER_API_KEY")
+    if env_key:
+        cfg.api_key = env_key
     return cfg
 
 

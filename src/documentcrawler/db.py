@@ -1167,6 +1167,7 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRow:
         error=row["error"],
         timeout_s=_safe_int(row, "timeout_s"),
         priority=_safe_int(row, "priority") or 0,
+        enriched=_json_object(row["metadata"]) if row["metadata"] else None,
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
     )
