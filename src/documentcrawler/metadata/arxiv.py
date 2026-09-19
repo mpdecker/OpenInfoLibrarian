@@ -16,6 +16,9 @@ log = get_logger(__name__)
 
 _ARXIV_API_BASE = "https://export.arxiv.org/api/query"
 _ARXIV_ID_RE = re.compile(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)?(\d{4}\.\d{4,5}(?:v\d+)?|[a-z\-]+/\d{7})", re.IGNORECASE)
+# arXiv registers its papers as DataCite DOIs: 10.48550/arXiv.<id> — the ID
+# is recoverable straight from the DOI.
+_ARXIV_DOI_RE = re.compile(r"^10\.48550/arxiv\.(\d{4}\.\d{4,5}(?:v\d+)?)$", re.IGNORECASE)
 
 
 def extract_arxiv_id(val: str | None) -> str | None:
@@ -23,6 +26,14 @@ def extract_arxiv_id(val: str | None) -> str | None:
     if not val:
         return None
     match = _ARXIV_ID_RE.search(val)
+    return match.group(1) if match else None
+
+
+def arxiv_id_from_doi(doi: str | None) -> str | None:
+    """Return the arXiv ID encoded in a 10.48550/arXiv.<id> DOI, if any."""
+    if not doi:
+        return None
+    match = _ARXIV_DOI_RE.match(doi.strip())
     return match.group(1) if match else None
 
 

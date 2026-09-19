@@ -64,6 +64,11 @@ email = "you@example.com"
 # Optional: set a mailto for the polite Crossref pool.
 mailto = "you@example.com"
 
+[metadata.openalex]
+# Optional but recommended: mailto routes requests into OpenAlex's polite
+# pool. Without it, datacenter IPs (CI, serverless) get throttled with 403s.
+mailto = "you@example.com"
+
 [sources]
 # Sources are tried in this order for each document. Open-access sources run
 # first; shadow-library sources fall back when no OA copy exists. Toggle any

@@ -400,3 +400,100 @@ def test_open_access_source_checks_unpaywall():
     candidates = asyncio.run(source.search(ctx))
     if candidates:
         assert any(c.source == "open_access" for c in candidates)
+
+
+# -----------------------------------------------------------------------------
+# PubMed fetch-path tests (bot-check pages, PDF passthrough, EPMC candidate)
+# -----------------------------------------------------------------------------
+
+_POW_PAGE = """<html><head><title>Preparing to download ...</title></head><body>
+<script type="module">
+    const POW_CHALLENGE = "VwR3BQx3BQtlAGDhZQR0AGV4BPV:4V0JItB30Heqs1C9gpZAa9BcY"
+    const POW_DIFFICULTY = "4"
+    const POW_COOKIE_NAME = "cloudpmc-viewer-pow"
+    window.ncbi.pmc.pow.init(POW_CHALLENGE, POW_DIFFICULTY, POW_COOKIE_NAME);
+</script>
+</body></html>"""
+
+_RECAPTCHA_PAGE = ('<!doctype html><html><head><title>Checking your browser - reCAPTCHA'
+                   '</title></head><body><div class="g-recaptcha" data-sitekey="x">'
+                   '</div></body></html>')
+
+
+def _pubmed_source():
+    cfg = SourceConfig(name="pubmed", enabled=True, options={})
+    return build_source("pubmed", cfg)
+
+
+def test_pubmed_fetch_passes_pdf_through():
+    from documentcrawler.models import Candidate
+
+    fetcher = FakeFetcher(text_map={"pdf/": "%PDF-1.7\nfake pdf bytes"})
+    source = _pubmed_source()
+    ctx = make_ctx(fetcher, pmcid="PMC1")
+    data = asyncio.run(source.fetch(
+        Candidate(source="pubmed", url="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1/pdf/"),
+        ctx,
+    ))
+    assert data is not None and data.startswith(b"%PDF")
+
+
+def test_pubmed_fetch_raises_clear_error_on_pow_challenge():
+    from documentcrawler.fetcher import FetchError
+    from documentcrawler.models import Candidate
+
+    fetcher = FakeFetcher(text_map={"pdf/": _POW_PAGE})
+    source = _pubmed_source()
+    ctx = make_ctx(fetcher, pmcid="PMC1")
+    try:
+        asyncio.run(source.fetch(
+            Candidate(source="pubmed", url="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1/pdf/"),
+            ctx,
+        ))
+        raise AssertionError("expected FetchError")
+    except FetchError as e:
+        assert "proof-of-work" in str(e)
+
+
+def test_pubmed_fetch_raises_clear_error_on_recaptcha_page():
+    from documentcrawler.fetcher import FetchError
+    from documentcrawler.models import Candidate
+
+    fetcher = FakeFetcher(text_map={"pdf/": _RECAPTCHA_PAGE})
+    source = _pubmed_source()
+    ctx = make_ctx(fetcher, pmcid="PMC1")
+    try:
+        asyncio.run(source.fetch(
+            Candidate(source="pubmed", url="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1/pdf/"),
+            ctx,
+        ))
+        raise AssertionError("expected FetchError")
+    except FetchError as e:
+        assert "reCAPTCHA" in str(e)
+
+
+def test_pubmed_search_includes_europepmc_fallback_candidate():
+    source = _pubmed_source()
+    fetcher = FakeFetcher()
+    ctx = make_ctx(fetcher, pmcid="PMC7759461")
+    candidates = asyncio.run(source.search(ctx))
+    urls = [c.url for c in candidates]
+    assert any("www.ncbi.nlm.nih.gov/pmc/articles/PMC7759461/pdf/" in u for u in urls)
+    assert any("europepmc.org/articles/PMC7759461" in u for u in urls)
+    # NCBI direct link stays the preferred candidate.
+    assert candidates[0].confidence > candidates[1].confidence
+
+
+def test_arxiv_source_mines_id_from_doi():
+    from documentcrawler.models import DocumentQuery
+    from documentcrawler.sources.base import SourceContext
+
+    source = build_source("arxiv", SourceConfig(name="arxiv", enabled=True, options={}))
+    ctx = SourceContext(
+        query=DocumentQuery(doi="10.48550/arXiv.1706.03762"),
+        fetcher=FakeFetcher(),
+        metadata=type("Metadata", (), {"oa_urls": []})(),
+        options={},
+    )
+    candidates = asyncio.run(source.search(ctx))
+    assert candidates and candidates[0].url == "https://arxiv.org/pdf/1706.03762.pdf"

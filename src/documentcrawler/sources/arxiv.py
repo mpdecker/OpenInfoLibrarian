@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from xml.etree import ElementTree as ET
 
+from documentcrawler.metadata.arxiv import arxiv_id_from_doi
 from documentcrawler.models import Candidate
 from documentcrawler.sources.base import Source, SourceContext, register
 from documentcrawler.utils.sanitize import extract_arxiv_id
@@ -17,9 +18,12 @@ _NS = {"a": "http://www.w3.org/2005/Atom"}
 class ArxivSource(Source):
 
     async def search(self, ctx: SourceContext) -> list[Candidate]:
-        # 1) explicit arxiv id in metadata.raw or title
-        arxiv_id = extract_arxiv_id(ctx.query.title or "") or extract_arxiv_id(
-            ctx.query.url or ""
+        # 1) explicit arxiv id in metadata.raw, title, url, or a
+        #    10.48550/arXiv.<id> DataCite DOI
+        arxiv_id = (
+            extract_arxiv_id(ctx.query.title or "")
+            or extract_arxiv_id(ctx.query.url or "")
+            or arxiv_id_from_doi(ctx.query.doi)
         )
         if arxiv_id:
             return [self._candidate_from_id(arxiv_id, confidence=0.99)]
