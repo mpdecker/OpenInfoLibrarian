@@ -145,7 +145,7 @@ function friendlyError(err) {
     return "The source hosting this paper is blocking automated downloads right now. Try again in a little while, or use the publisher's page.";
   if (e.includes("timeout") || e.includes("timed out"))
     return "The search took too long. Please try again — it often works on a second attempt.";
-  if (e.includes("no source produced") || e.includes("not a pdf"))
+  if (e.includes("no source produced") || e.includes("not a pdf") || e.includes("playwright"))
     return "No freely readable copy could be found. Many papers are only available behind a publisher's paywall — try the publisher's page or your library.";
   if (e.includes("rate"))
     return "The search services are busy at the moment. Please wait a few seconds and try again.";

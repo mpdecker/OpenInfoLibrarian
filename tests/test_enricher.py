@@ -166,3 +166,28 @@ async def test_arxiv_doi_alone_enriches_without_title():
     assert meta.year == 2017
     assert "Ashish Vaswani" in meta.authors
     assert "https://arxiv.org/pdf/1706.03762.pdf" in meta.oa_urls
+
+
+async def test_canonical_title_casing_replaces_query_casing():
+    # Free-text searches arrive lowercased; when the looked-up record has
+    # the same title, the publisher's canonical casing should win.
+    fetcher = _FakeFetcher()
+
+    async def _dead(url, params=None):
+        fetcher.calls.append((url, params))
+        if "crossref.org" in url:
+            return {"message": _CROSSREF_RECORD}
+        raise RuntimeError(f"http 404 for {url}")
+
+    fetcher.get_json = _dead  # type: ignore[method-assign]
+    e = MetadataEnricher(fetcher)
+
+    async def _none(query):
+        return None
+
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(e.publication_resolver, "resolve", _none)
+        meta = await e.enrich(DocumentQuery(
+            doi="10.48550/arXiv.1706.03762", title="attention is all you need"))
+    assert meta.title == "Attention Is All You Need"

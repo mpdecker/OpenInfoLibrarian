@@ -237,7 +237,10 @@ def _apply(meta: EnrichedMetadata, fields: dict[str, Any], *, override: bool,
     ``override`` (set when the query carried an explicit DOI, so the lookup
     hit the exact record) lets the lookup replace resolver-guessed values;
     otherwise the existing value wins, as before. An explicitly provided
-    year always wins over anything looked up.
+    year always wins over anything looked up. As a courtesy, a looked-up
+    title identical to the query title apart from casing/whitespace
+    replaces it with the publisher's canonical form (free-text searches
+    are often lowercased).
     """
     for key, new in fields.items():
         if new is None:
@@ -245,7 +248,10 @@ def _apply(meta: EnrichedMetadata, fields: dict[str, Any], *, override: bool,
         if key == "year" and protect_year is not None:
             continue
         old = getattr(meta, key, None)
-        if override:
+        if key == "title" and isinstance(old, str) and isinstance(new, str) \
+                and old.strip().lower() == new.strip().lower():
+            setattr(meta, key, new)
+        elif override:
             if key == "authors" and not new:
                 continue
             setattr(meta, key, new)
