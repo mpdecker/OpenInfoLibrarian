@@ -107,6 +107,32 @@ merges duplicates, and (optionally) enqueues hits into the queue with
 sources, set a Unpaywall email (required by their TOS), choose a download
 directory, and tweak the filename template.
 
+## HTTP server (web app)
+
+```bash
+pip install -e .[serve]
+documentcrawler serve --port 8099      # interactive docs at /docs
+```
+
+The server shares `config.toml` and the SQLite database with the CLI/GUI.
+With `[server].public_demo = true` it runs in demo mode: no background
+worker (`/acquire/sync` processes inline instead of `/acquire` queuing),
+and the `/db/*` mutation + webhook endpoints are disabled — suitable for
+public internet exposure.
+
+A public demo is deployed at
+**https://documentcrawler.vercel.app** (open-access sources only,
+ephemeral storage). Notables:
+
+- `GET /` is a service landing page; `/docs` is the interactive OpenAPI UI.
+- All errors use one envelope: `{"error": {"code", "message", ...}}`.
+- Job responses include `enriched.enrich_providers` — which of
+  Crossref / OpenAlex / Unpaywall / arXiv answered during enrichment.
+- arXiv DataCite DOIs (`10.48550/arXiv.<id>`) are resolved by mining the
+  arXiv ID from the DOI itself.
+
+See [DEPLOY.md](DEPLOY.md) for deployment and smoke-test details.
+
 ## Input formats
 
 - **CSV**: any subset of columns `doi,title,authors,year,isbn,keywords,url`.
