@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from xml.etree import ElementTree as ET
 
 from documentcrawler.fetcher import FetchError
@@ -13,6 +14,11 @@ _ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 _ELINK = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
 _PMC_PDF = "https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/"
 _EPMC_PDF = "https://europepmc.org/articles/{pmcid}?pdf=render"
+
+# Users paste PubMed links straight from the browser bar.
+_PUBMED_URL_RE = re.compile(
+    r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", re.IGNORECASE
+)
 
 # NCBI's PDF endpoint increasingly sits behind bot checks that no amount of
 # link parsing satisfies — detecting them here keeps the attempt log honest
@@ -28,6 +34,11 @@ class PubMedSource(Source):
         pmcid = ctx.metadata.pmcid
         pmid = ctx.metadata.pmid
         doi = ctx.metadata.doi
+
+        if not pmid and ctx.query.url:
+            m = _PUBMED_URL_RE.search(ctx.query.url)
+            if m:
+                pmid = m.group(1)
 
         if not pmcid and not pmid and doi:
             pmid = await self._pmid_from_doi(ctx, doi)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -113,6 +114,14 @@ class MetadataEnricher:
             except Exception as e:
                 log.debug("crossref search failed: %s", e)
 
+        if not meta.doi and q.url:
+            # A pasted PubMed link carries no DOI — recover it via
+            # esummary so the regular Crossref/OpenAlex/Unpaywall chain
+            # (and its OA URLs) can fire for this document too.
+            doi = await _doi_from_pubmed_url(self.fetcher, q.url)
+            if doi:
+                meta.doi = doi
+
         if meta.doi:
             tasks = [
                 crossref_lookup(self.fetcher, meta.doi, mailto=self.crossref_mailto),
@@ -138,12 +147,14 @@ class MetadataEnricher:
                     log.debug("enrich: %s lookup returned no data", name)
 
             if cr:
-                _apply(meta, _cr_fields(cr), override=doi_from_query, protect_year=q.year)
+                _apply(meta, _cr_fields(cr), override=doi_from_query, protect_year=q.year,
+                       prefer_canonical_title=_looks_like_citation(q.title))
                 meta.raw["crossref"] = cr
 
             if oa:
                 meta.raw["openalex"] = oa
-                _apply(meta, _oa_fields(oa), override=doi_from_query, protect_year=q.year)
+                _apply(meta, _oa_fields(oa), override=doi_from_query, protect_year=q.year,
+                       prefer_canonical_title=_looks_like_citation(q.title))
                 meta.url = meta.url or oa.get("doi") or oa.get("id")
                 if oa.get("primary_location"):
                     url = oa["primary_location"].get("pdf_url")
@@ -203,6 +214,40 @@ def _query_hint(extra: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
+_PUBMED_URL_RE = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", re.IGNORECASE)
+
+# "(2017)." / "et al." / very long strings are pasted citations, not real
+# titles — the matched record's canonical title should replace them.
+_CITATION_LIKE_RE = re.compile(r"\((?:19|20)\d{2}[a-z]?\)|\bet\.?\s+al\b", re.IGNORECASE)
+
+
+def _looks_like_citation(title: str | None) -> bool:
+    if not title:
+        return False
+    return bool(_CITATION_LIKE_RE.search(title)) or len(title) > 120
+
+
+async def _doi_from_pubmed_url(fetcher: Fetcher, url: str) -> str | None:
+    """Resolve a pubmed.ncbi.nlm.nih.gov/<pmid> URL to the article's DOI."""
+    m = _PUBMED_URL_RE.search(url)
+    if not m:
+        return None
+    from xml.etree import ElementTree as ET
+
+    try:
+        xml = await fetcher.get_text(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+            params={"db": "pubmed", "id": m.group(1)},
+        )
+        root = ET.fromstring(xml)
+        for item in root.findall(".//Item"):
+            if item.get("Name") == "doi" and item.text:
+                return normalize_doi(item.text)
+    except Exception as e:
+        log.debug("pubmed url -> doi resolution failed: %s", e)
+    return None
+
+
 def _cr_fields(cr: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": _join_first(cr.get("title")),
@@ -231,16 +276,16 @@ def _oa_fields(oa: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply(meta: EnrichedMetadata, fields: dict[str, Any], *, override: bool,
-           protect_year: int | None) -> None:
+           protect_year: int | None, prefer_canonical_title: bool = False) -> None:
     """Merge looked-up fields into `meta`.
 
     ``override`` (set when the query carried an explicit DOI, so the lookup
     hit the exact record) lets the lookup replace resolver-guessed values;
     otherwise the existing value wins, as before. An explicitly provided
     year always wins over anything looked up. As a courtesy, a looked-up
-    title identical to the query title apart from casing/whitespace
-    replaces it with the publisher's canonical form (free-text searches
-    are often lowercased).
+    title replaces the query title when they match apart from
+    casing/whitespace, or when the query "title" is really a pasted
+    citation (``prefer_canonical_title``) — a search key, not a title.
     """
     for key, new in fields.items():
         if new is None:
@@ -248,8 +293,10 @@ def _apply(meta: EnrichedMetadata, fields: dict[str, Any], *, override: bool,
         if key == "year" and protect_year is not None:
             continue
         old = getattr(meta, key, None)
-        if key == "title" and isinstance(old, str) and isinstance(new, str) \
-                and old.strip().lower() == new.strip().lower():
+        if key == "title" and isinstance(new, str) and (
+            prefer_canonical_title
+            or (isinstance(old, str) and old.strip().lower() == new.strip().lower())
+        ):
             setattr(meta, key, new)
         elif override:
             if key == "authors" and not new:

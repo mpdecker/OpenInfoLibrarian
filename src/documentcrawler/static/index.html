@@ -93,7 +93,7 @@
            placeholder="Paste a DOI, an arXiv link, or a paper title…">
     <button id="goBtn" type="submit">Find paper</button>
   </form>
-  <p class="hint">A DOI looks like <code>10.1038/s41586-020-2649-2</code>. You can also paste the paper's title.</p>
+  <p class="hint">You can paste a DOI (like <code>10.1038/s41586-020-2649-2</code>), a link from doi.org / arXiv / PubMed, an ISBN for books, or just the paper's title.</p>
 
   <div class="examples" id="examples">
     <span>Try an example:</span>
@@ -134,8 +134,11 @@ function parseQuery(raw) {
   const v = raw.trim();
   if (/^doi:\s*/i.test(v))  return { doi: v.replace(/^doi:\s*/i, "") };
   if (/^10\.\d{4,9}\//i.test(v)) return { doi: v };
+  if (/^https?:\/\/(dx\.)?doi\.org\//i.test(v)) return { doi: v.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "") };
   if (/^https?:\/\//i.test(v)) return { url: v };
   if (/arxiv\.org\/(?:abs|pdf)\//i.test(v)) return { url: v };
+  const digits = v.replace(/[-\s]/g, "");
+  if (/^97[89]\d{10}$/.test(digits) || /^\d{9}[\dXx]$/.test(digits)) return { isbn: digits };
   return { title: v };
 }
 
