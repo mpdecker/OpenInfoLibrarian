@@ -1594,3 +1594,31 @@ def test_dedupe_first_author_surname_extraction():
     assert _first_author_surname(["Jean-Luc Picard"]) == "picard"
     assert _first_author_surname(["van der Waals, Johannes"]) == "van der waals"
     assert _first_author_surname([]) == ""
+
+
+def test_post_merge_unites_doi_and_title_only_duplicates():
+    from documentcrawler.searcher.aggregate import MultiSearcher
+    from documentcrawler.searcher.base import SearchHit
+
+    with_doi = SearchHit(source="crossref", title="Attention Is All You Need",
+                         doi="10.48550/arXiv.1706.03762", year=2017, score=0.9)
+    title_only = SearchHit(source="openalex", title="Attention is All You Need,",
+                           year=2018, score=0.7, pdf_url="https://x.example/p.pdf")
+    # Same paper, different primary dedupe keys (doi:... vs title:...|2018).
+    bucket = {with_doi.dedupe_key(): with_doi, title_only.dedupe_key(): title_only}
+    merged = MultiSearcher._post_merge_by_title(bucket)
+    assert len(merged) == 1
+    keep = next(iter(merged.values()))
+    assert keep.doi == "10.48550/arXiv.1706.03762"  # identifier kept
+    assert keep.pdf_url == "https://x.example/p.pdf"  # metadata backfilled
+
+
+def test_post_merge_keeps_same_title_different_years_apart():
+    from documentcrawler.searcher.aggregate import MultiSearcher
+    from documentcrawler.searcher.base import SearchHit
+
+    a = SearchHit(source="crossref", title="Introduction to Learning", year=2005, score=0.9)
+    b = SearchHit(source="openalex", title="Introduction to Learning", year=2020, score=0.9)
+    bucket = {a.dedupe_key(): a, b.dedupe_key(): b}
+    merged = MultiSearcher._post_merge_by_title(bucket)
+    assert len(merged) == 2  # genuinely different papers/editions

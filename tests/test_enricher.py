@@ -10,7 +10,6 @@ import pytest
 from documentcrawler.metadata.enricher import MetadataEnricher
 from documentcrawler.models import DocumentQuery
 
-
 _OPENALEX_RECORD = {
     "doi": "https://doi.org/10.48550/arXiv.1706.03762",
     "display_name": "Attention Is All You Need",
@@ -166,3 +165,98 @@ async def test_arxiv_doi_alone_enriches_without_title():
     assert meta.year == 2017
     assert "Ashish Vaswani" in meta.authors
     assert "https://arxiv.org/pdf/1706.03762.pdf" in meta.oa_urls
+
+
+async def test_canonical_title_casing_replaces_query_casing():
+    # Free-text searches arrive lowercased; when the looked-up record has
+    # the same title, the publisher's canonical casing should win.
+    fetcher = _FakeFetcher()
+
+    async def _dead(url, params=None):
+        fetcher.calls.append((url, params))
+        if "crossref.org" in url:
+            return {"message": _CROSSREF_RECORD}
+        raise RuntimeError(f"http 404 for {url}")
+
+    fetcher.get_json = _dead  # type: ignore[method-assign]
+    e = MetadataEnricher(fetcher)
+
+    async def _none(query):
+        return None
+
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(e.publication_resolver, "resolve", _none)
+        meta = await e.enrich(DocumentQuery(
+            doi="10.48550/arXiv.1706.03762", title="attention is all you need"))
+    assert meta.title == "Attention Is All You Need"
+
+
+_ESUMMARY_XML = """<?xml version="1.0"?>
+<!DOCTYPE eSummaryResult>
+<eSummaryResult>
+  <DocSum>
+    <Item Name="PubDate" Type="Date">2020 Nov</Item>
+    <Item Name="Source" Type="str">Nature</Item>
+    <Item Name="Title" Type="str">A SARS-CoV-2 protein interaction map</Item>
+    <Item Name="doi" Type="str">10.1038/s41586-020-2286-9</Item>
+  </DocSum>
+</eSummaryResult>"""
+
+
+class _PubmedUrlFetcher(_FakeFetcher):
+    async def get_text(self, url: str, params: dict[str, Any] | None = None) -> str:
+        if "esummary.fcgi" in url:
+            assert params and params.get("id") == "33097646", params
+            return _ESUMMARY_XML
+        raise RuntimeError(f"http 404 for {url}")
+
+
+async def test_pubmed_url_resolves_to_doi_and_enriches():
+    # A pasted PubMed link should recover the DOI via esummary so the
+    # Crossref/OpenAlex/Unpaywall chain fires (and its OA URLs).
+    fetcher = _PubmedUrlFetcher()
+
+    async def _json(url, params=None):
+        if "esummary" in url:
+            return _ESUMMARY_XML
+        return await _FakeFetcher.get_json(fetcher, url, params)
+
+    fetcher.get_json = _json  # type: ignore[method-assign]
+    e = MetadataEnricher(fetcher)
+
+    async def _none(query):
+        return None
+
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(e.publication_resolver, "resolve", _none)
+        meta = await e.enrich(
+            DocumentQuery(url="https://pubmed.ncbi.nlm.nih.gov/33097646/"))
+    assert meta.doi == "10.1038/s41586-020-2286-9"
+    assert "crossref" in meta.enrich_providers
+
+
+async def test_pasted_citation_gets_canonical_title():
+    # Title-only search with a pasted bibliography string: the DOI is
+    # discovered (not from the query), so override=False — the citation
+    # must still yield to the record's canonical title.
+    fetcher = _FakeFetcher()
+
+    async def _json(url, params=None):
+        if "crossref.org/works/10.48550" in url:
+            return {"message": _CROSSREF_RECORD}
+        raise RuntimeError("404")
+
+    fetcher.get_json = _json  # type: ignore[method-assign]
+    e = MetadataEnricher(fetcher)
+
+    async def _resolved(query):
+        return _FakeResolverHit()  # search finds the right paper + DOI
+
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(e.publication_resolver, "resolve", _resolved)
+        meta = await e.enrich(DocumentQuery(
+            title="Vaswani, A., et al. (2017). Attention Is All You Need. NeurIPS."))
+    assert meta.title == "Attention Is All You Need"

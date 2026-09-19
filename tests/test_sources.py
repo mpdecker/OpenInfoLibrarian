@@ -497,3 +497,30 @@ def test_arxiv_source_mines_id_from_doi():
     )
     candidates = asyncio.run(source.search(ctx))
     assert candidates and candidates[0].url == "https://arxiv.org/pdf/1706.03762.pdf"
+
+
+def test_pubmed_source_mines_pmid_from_url():
+    from documentcrawler.models import DocumentQuery
+    from documentcrawler.sources.base import SourceContext
+
+    # A pasted PubMed link: elink maps pmid -> pmcid, so the XML fixtures
+    # only need to cover the elink step.
+    elink_xml = """<?xml version="1.0"?>
+    <eLinkResult>
+      <LinkSet>
+        <LinkSetDb>
+          <Link><Id>7759461</Id></Link>
+        </LinkSetDb>
+      </LinkSet>
+    </eLinkResult>"""
+    fetcher = FakeFetcher(text_map={"elink.fcgi": elink_xml})
+    source = _pubmed_source()
+    ctx = SourceContext(
+        query=DocumentQuery(url="https://pubmed.ncbi.nlm.nih.gov/33097646/"),
+        fetcher=fetcher,
+        metadata=type("Metadata", (), {"oa_urls": [], "pmid": None, "pmcid": None, "doi": None})(),
+        options={},
+    )
+    candidates = asyncio.run(source.search(ctx))
+    urls = [c.url for c in candidates]
+    assert any("PMC7759461" in u for u in urls), urls
