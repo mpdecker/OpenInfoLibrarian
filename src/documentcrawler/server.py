@@ -94,6 +94,11 @@ class WebhookRequest(BaseModel):
     secret: str | None = None
 
 
+class SourceToggleRequest(BaseModel):
+    enabled: bool
+    acknowledged: bool = False
+
+
 class WebhookResponse(BaseModel):
     id: int
     url: str
@@ -190,6 +195,15 @@ def create_app(config_path: Path) -> FastAPI:
     # worker running (see lifespan), no webhook could ever fire, so
     # accepting registrations would only be misleading and a spam surface.
     DEMO_DISABLED_PREFIXES = ("/webhooks",)
+    # Source catalogue for the runtime toggles: open-access download
+    # sources are legit everywhere; the shadow libraries are opt-in per
+    # deployment (and never available on public_demo instances, whose
+    # configs leave them unreachable regardless of toggles).
+    LEGIT_SOURCES = ["open_access", "arxiv", "pubmed", "doaj"]
+    SHADOW_SOURCES = ["scihub", "annas_archive", "libgen", "zlibrary"]
+    TOGGLEABLE_SOURCES = LEGIT_SOURCES + SHADOW_SOURCES
+
+    app.state.config_path = config_path
 
     @app.middleware("http")
     async def log_and_auth_requests(request: Request, call_next: Any) -> Any:
@@ -658,6 +672,65 @@ def create_app(config_path: Path) -> FastAPI:
         count = db.clean_metadata()
         return {"ok": True, "cleaned_records": count}
 
+    @app.get("/sources", tags=["Sources"])
+    async def list_sources() -> dict[str, Any]:
+        """List configurable document sources (open-access + shadow libraries)."""
+        cfg_dyn: Config = app.state.config
+        return {
+            "can_manage": not cfg_dyn.server.public_demo,
+            "public_demo": cfg_dyn.server.public_demo,
+            "sources": [
+                {
+                    "name": name,
+                    "kind": "shadow" if name in SHADOW_SOURCES else "open_access",
+                    "enabled": cfg_dyn.source(name).enabled,
+                }
+                for name in TOGGLEABLE_SOURCES
+            ],
+        }
+
+    @app.post("/sources/{name}", tags=["Sources"])
+    async def set_source(name: str, body: SourceToggleRequest) -> dict[str, Any]:
+        """Enable or disable a document source at runtime.
+
+        Persisted surgically to the server's config.toml (sections like
+        [server] are preserved), so the CLI and GUI see the same state and
+        the change survives restarts. Blocked on public_demo instances —
+        their configs never expose shadow sources at all.
+        """
+        cfg_dyn: Config = app.state.config
+        if cfg_dyn.server.public_demo:
+            raise HTTPException(
+                status_code=403,
+                detail="Source management is disabled on the public demo instance.",
+            )
+        if name not in TOGGLEABLE_SOURCES:
+            raise HTTPException(status_code=404, detail=f"Unknown source {name!r}")
+        if body.enabled and name in SHADOW_SOURCES and not body.acknowledged:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Enabling a shadow library requires acknowledged=true — these "
+                    "sources host content under disputed legal status and you are "
+                    "responsible for complying with the laws applicable to you."
+                ),
+            )
+
+        from documentcrawler.config import set_source_enabled_in_file
+
+        try:
+            set_source_enabled_in_file(Path(app.state.config_path), name, body.enabled)
+            app.state.config = load_config(Path(app.state.config_path))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not update config: {e}") from e
+
+        cfg_dyn = app.state.config
+        return {
+            "name": name,
+            "enabled": cfg_dyn.source(name).enabled,
+            "order": cfg_dyn.sources_order,
+        }
+
     @app.get("/search/pdf-content", tags=["Search"])
     async def search_pdf_content(q: str, limit: int = 50) -> dict[str, Any]:
         """Full-text search inside downloaded PDF document body contents."""
@@ -678,24 +751,31 @@ def create_app(config_path: Path) -> FastAPI:
         from documentcrawler.fetcher import Fetcher
         from documentcrawler.searcher.aggregate import MultiSearcher, SearchQuery
 
+        cfg_dyn: Config = app.state.config
         options: dict[str, dict[str, Any]] = {}
-        cr_mailto = (cfg.metadata.get("crossref") or {}).get("mailto")
-        oa_mailto = (cfg.metadata.get("openalex") or {}).get("mailto")
+        cr_mailto = (cfg_dyn.metadata.get("crossref") or {}).get("mailto")
+        oa_mailto = (cfg_dyn.metadata.get("openalex") or {}).get("mailto")
         if cr_mailto:
             options["crossref"] = {"mailto": cr_mailto}
         if oa_mailto:
             options["openalex"] = {"mailto": oa_mailto}
 
+        # Base metadata engines, plus any shadow-library searchers the
+        # deployment has enabled (config-driven; the public demo config
+        # enables none, so they are unreachable there).
+        sources = ["crossref", "openalex", "arxiv", "openlibrary"]
+        sources += [s for s in SHADOW_SOURCES if cfg_dyn.source(s).enabled]
+
         async with Fetcher(
-            cfg.fetcher,
-            timeout_s=cfg.general.request_timeout_s,
+            cfg_dyn.fetcher,
+            timeout_s=cfg_dyn.general.request_timeout_s,
             max_retries=1,
         ) as fetcher:
             result = await MultiSearcher(fetcher).search(
                 SearchQuery(
                     text=q,
                     kind="auto",
-                    sources=["crossref", "openalex", "arxiv", "openlibrary"],
+                    sources=sources,
                     limit_per_source=6,
                     overall_timeout_s=12.0,
                     options_per_source=options,
@@ -706,6 +786,7 @@ def create_app(config_path: Path) -> FastAPI:
         return {
             "query": q,
             "count": len(hits),
+            "sources_used": sources,
             "results": [
                 {
                     "title": h.title,

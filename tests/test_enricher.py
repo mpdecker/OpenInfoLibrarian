@@ -10,7 +10,6 @@ import pytest
 from documentcrawler.metadata.enricher import MetadataEnricher
 from documentcrawler.models import DocumentQuery
 
-
 _OPENALEX_RECORD = {
     "doi": "https://doi.org/10.48550/arXiv.1706.03762",
     "display_name": "Attention Is All You Need",

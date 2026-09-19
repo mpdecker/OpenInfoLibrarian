@@ -125,6 +125,13 @@ worker (`/acquire/sync` processes inline instead of `/acquire` queuing),
 and the `/db/*` mutation + webhook endpoints are disabled — suitable for
 public internet exposure.
 
+**Shadow libraries.** On a self-hosted server the web UI's *Sources* panel
+(or `GET/POST /sources`) toggles Sci-Hub, Anna's Archive, LibGen, and
+Z-Library at runtime — the first flip requires acknowledging the legal
+notice, the change is surgically persisted to `config.toml` (so the CLI
+and GUI see it too), and both `/search` and downloads pick it up on the
+next request. The public demo never exposes them.
+
 A public demo is deployed at
 **https://documentcrawler.vercel.app** (open-access sources only,
 ephemeral storage). Notables:

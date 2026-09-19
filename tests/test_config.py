@@ -125,3 +125,39 @@ def test_fallback_config_shadow_disabled():
     assert "[sources.scihub]" in _FALLBACK_CONFIG
     assert "enabled = false" in _FALLBACK_CONFIG
     assert "[sources.zlibrary]" in _FALLBACK_CONFIG
+
+
+def test_set_source_enabled_in_file_surgical_edit(tmp_path):
+    from documentcrawler.config import load_config, set_source_enabled_in_file
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "[server]\npublic_demo = false\napi_key = \"keep-me\"\n\n"
+        "[sources]\norder = [\n    \"open_access\",\n    \"arxiv\",\n]\n\n"
+        "[sources.open_access]\nenabled = true\n\n"
+        "[sources.scihub]\nenabled = false\nmirrors = [\"https://sci-hub.se\"]\n",
+        encoding="utf-8",
+    )
+
+    set_source_enabled_in_file(cfg_path, "annas_archive", True)   # new section + order
+    set_source_enabled_in_file(cfg_path, "scihub", True)          # flip existing
+    set_source_enabled_in_file(cfg_path, "arxiv", False)          # order-only member gains section
+
+    cfg = load_config(cfg_path)
+    assert "annas_archive" in cfg.sources_order
+    assert cfg.source("annas_archive").enabled is True
+    assert cfg.source("scihub").enabled is True
+    assert cfg.source("scihub").options.get("mirrors") == ["https://sci-hub.se"]
+    assert cfg.source("arxiv").enabled is False
+    # unknown-to-the-emitter sections must survive the surgery
+    assert cfg.raw["server"]["api_key"] == "keep-me"
+
+
+def test_set_source_enabled_missing_file(tmp_path):
+    from documentcrawler.config import load_config, set_source_enabled_in_file
+
+    cfg_path = tmp_path / "sub" / "config.toml"
+    set_source_enabled_in_file(cfg_path, "libgen", True)
+    cfg = load_config(cfg_path)
+    assert cfg.source("libgen").enabled is True
+    assert "libgen" in cfg.sources_order

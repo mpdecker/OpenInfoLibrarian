@@ -187,9 +187,13 @@ class PublicationResolver:
             (query.doi and best.doi and _norm(query.doi) == _norm(best.doi))
             or (query.isbn and best.isbn and _norm(query.isbn) == _norm(best.isbn))
         )
-        if not authoritative and query.title and best.title:
-            if _text_similarity(query.title, best.title) < 0.45:
-                return None
+        if (
+            not authoritative
+            and query.title
+            and best.title
+            and _text_similarity(query.title, best.title) < 0.45
+        ):
+            return None
 
         return ResolvedPublication(
             source=best.source,

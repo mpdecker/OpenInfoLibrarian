@@ -313,6 +313,7 @@ def test_document_file_errors(tmp_path):
 
 def test_search_endpoint_returns_merged_hits(client, monkeypatch):
     from types import SimpleNamespace
+
     from documentcrawler.searcher import aggregate
     from documentcrawler.searcher.base import SearchHit
 
@@ -348,3 +349,96 @@ def test_search_endpoint_requires_query(client):
     resp = client.get("/search?q=")
     assert resp.status_code == 400
     assert "q is required" in resp.json()["error"]["message"]
+
+
+# -----------------------------------------------------------------------------
+# Sources toggles (shadow-library activation)
+# -----------------------------------------------------------------------------
+
+
+def test_sources_listing_and_toggle(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndownload_dir = "downloads"\ndb_path = "crawler.db"\n\n'
+        "[sources]\norder = [\"open_access\", \"arxiv\", \"pubmed\", \"doaj\"]\n",
+        encoding="utf-8",
+    )
+    app = create_app(cfg_path)
+    with TestClient(app) as tc:
+        listing = tc.get("/sources").json()
+        assert listing["can_manage"] is True
+        names = {s["name"]: s for s in listing["sources"]}
+        assert names["scihub"]["kind"] == "shadow" and names["scihub"]["enabled"] is False
+        assert names["open_access"]["kind"] == "open_access"
+
+        # enabling a shadow source requires acknowledgment
+        r = tc.post("/sources/scihub", json={"enabled": True})
+        assert r.status_code == 400
+        assert "acknowledged" in r.json()["error"]["message"]
+
+        r = tc.post("/sources/scihub", json={"enabled": True, "acknowledged": True})
+        assert r.status_code == 200
+        assert r.json()["enabled"] is True
+        assert "scihub" in r.json()["order"]
+
+        # persisted + visible through a fresh listing
+        assert tc.get("/sources").json()["sources"] and any(
+            s["name"] == "scihub" and s["enabled"] for s in tc.get("/sources").json()["sources"]
+        )
+        # open-access source can be disabled too
+        r = tc.post("/sources/doaj", json={"enabled": False})
+        assert r.status_code == 200 and r.json()["enabled"] is False
+
+        # unknown source
+        assert tc.post("/sources/nope", json={"enabled": True}).status_code == 404
+
+
+def test_sources_toggle_blocked_on_public_demo(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndownload_dir = "downloads"\ndb_path = "crawler.db"\n\n'
+        "[server]\npublic_demo = true\n",
+        encoding="utf-8",
+    )
+    app = create_app(cfg_path)
+    with TestClient(app) as tc:
+        listing = tc.get("/sources").json()
+        assert listing["can_manage"] is False and listing["public_demo"] is True
+        r = tc.post("/sources/scihub", json={"enabled": True, "acknowledged": True})
+        assert r.status_code == 403
+
+
+def test_search_includes_enabled_shadow_sources(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from documentcrawler.config import set_source_enabled_in_file
+    from documentcrawler.searcher import aggregate
+    from documentcrawler.searcher.base import SearchHit
+
+    seen = {}
+
+    class FakeMultiSearcher:
+        def __init__(self, fetcher):
+            pass
+
+        async def search(self, query):
+            seen["sources"] = list(query.sources)
+            hit = SearchHit(source="crossref", title="Shadowy Paper", doi="10.1/s", score=0.9)
+            hit.extra["contributors"] = {"crossref"}
+            return SimpleNamespace(runs=[], merged=[hit])
+
+    monkeypatch.setattr(aggregate, "MultiSearcher", FakeMultiSearcher)
+
+    # The shared `client` fixture writes its config into tmp_path; find it
+    # via the app's own state once started, then enable libgen there.
+    client.get("/search?q=x")
+    assert set(seen["sources"]) == {"crossref", "openalex", "arxiv", "openlibrary"}
+
+    from documentcrawler.config import load_config
+    cfg_path = client.app.state.config_path
+    set_source_enabled_in_file(cfg_path, "libgen", True)
+    client.app.state.config = load_config(cfg_path)
+
+    r2 = client.get("/search?q=x")
+    assert "libgen" in seen["sources"]
+    assert "libgen" in r2.json()["sources_used"]

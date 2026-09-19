@@ -104,6 +104,27 @@
   details.recent summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
   details.recent[open] summary::before { transform: rotate(90deg); }
   details.recent .body { padding: 0 20px 16px; }
+
+  /* sources panel */
+  .srcrow {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px;
+  }
+  .srcrow .n { font-weight: 600; }
+  .srcrow .d { color: var(--muted); font-size: 13px; }
+  .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; position: relative; z-index: 2; }
+  .switch .track {
+    position: absolute; inset: 0; background: #cbd5e1; border-radius: 999px; transition: background .15s;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    background: #fff; border-radius: 50%; transition: left .15s;
+  }
+  .switch input:checked + .track { background: var(--ok); }
+  .switch input:checked + .track::after { left: 21px; }
+  .srcnote { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .locknote { background: #f8fafc; border: 1px dashed var(--line); border-radius: 8px; padding: 12px 14px; color: var(--muted); font-size: 13px; margin-top: 8px; }
   .doc {
     display: flex; gap: 10px; align-items: center; justify-content: space-between;
     padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px;
@@ -150,6 +171,19 @@
   <div class="notice hidden" id="notice"></div>
 
   <div class="result hidden" id="result"></div>
+
+  <details class="recent" id="sourcesPanel">
+    <summary>Sources</summary>
+    <div class="body">
+      <div class="srcrow" style="border-top:none">
+        <span><span class="n">Open-access sources</span>
+          <span class="d">— Unpaywall, OpenAlex, arXiv, PubMed Central, DOAJ</span></span>
+        <span class="d">always on</span>
+      </div>
+      <div id="shadowList"></div>
+      <div id="sourcesNote"></div>
+    </div>
+  </details>
 
   <details class="recent hidden" id="recentPanel">
     <summary>Recent documents</summary>
@@ -365,6 +399,82 @@ function showNotice(text) {
   $("notice").classList.remove("hidden");
 }
 
+/* ---------- sources panel (shadow libraries opt-in) ---------- */
+
+const SHADOW_LABELS = {
+  scihub: "Sci-Hub",
+  annas_archive: "Anna's Archive",
+  libgen: "Library Genesis",
+  zlibrary: "Z-Library",
+};
+const SHADOW_ACK_KEY = "dc.shadowAck";
+
+async function loadSources() {
+  const list = $("shadowList"), note = $("sourcesNote");
+  try {
+    const resp = await fetch("/sources");
+    const d = await resp.json();
+    list.innerHTML = "";
+    note.innerHTML = "";
+    if (!d.can_manage) {
+      list.innerHTML = "";
+      note.innerHTML = `<div class="locknote">🔒 Shadow libraries (Sci-Hub, Anna's Archive, LibGen,
+        Z-Library) are <b>not available on this public demo</b> — only legitimate open-access
+        sources are searched. Run your own instance
+        (<code>pip install -e .[serve]</code> then <code>documentcrawler serve</code>) to opt in.</div>`;
+      return;
+    }
+    for (const s of d.sources.filter(s => s.kind === "shadow")) {
+      const row = document.createElement("div");
+      row.className = "srcrow";
+      row.innerHTML = `
+        <span><span class="n">${SHADOW_LABELS[s.name] || s.name}</span>
+          <span class="d">— shadow library</span></span>
+        <span class="switch"><input type="checkbox" aria-label="Enable ${SHADOW_LABELS[s.name] || s.name}"
+          ${s.enabled ? "checked" : ""}><span class="track"></span></span>`;
+      const cb = row.querySelector("input");
+      cb.dataset.name = s.name;
+      cb.dataset.wasEnabled = s.enabled ? "1" : "";
+      cb.addEventListener("change", () => toggleSource(cb));
+      list.appendChild(row);
+    }
+    note.innerHTML = `<p class="srcnote">Toggles apply to search <b>and</b> downloads immediately, and are
+      saved to the server's config so the CLI and GUI see them too. Shadow sources are tried only
+      when no open-access copy exists.</p>`;
+  } catch (_) {
+    note.innerHTML = '<p class="srcnote">Could not load source settings.</p>';
+  }
+}
+
+async function toggleSource(cb) {
+  const name = cb.dataset.name;
+  const want = cb.checked;
+  if (want && !localStorage.getItem(SHADOW_ACK_KEY)) {
+    const ok = confirm(
+      SHADOW_LABELS[name] + " hosts content under disputed legal status in many jurisdictions.\n\n" +
+      "You are responsible for your use of this source, for complying with its terms and with the copyright laws applicable to you.\n\nEnable shadow libraries?");
+    if (!ok) { cb.checked = false; return; }
+    localStorage.setItem(SHADOW_ACK_KEY, "1");
+  }
+  try {
+    const resp = await fetch("/sources/" + name, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: want, acknowledged: true }),
+    });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => null);
+      alert("Could not update: " + ((e && e.error && e.error.message) || resp.status));
+      cb.checked = !want;
+      return;
+    }
+    cb.dataset.wasEnabled = want ? "1" : "";
+  } catch (_) {
+    alert("Network error while updating sources.");
+    cb.checked = !want;
+  }
+}
+
 /* ---------- wiring ---------- */
 
 $("searchForm").addEventListener("submit", async (ev) => {
@@ -400,6 +510,7 @@ document.querySelectorAll(".chip").forEach((chip) => {
 });
 
 loadRecent();
+loadSources();
 </script>
 </body>
 </html>

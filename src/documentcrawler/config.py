@@ -270,6 +270,63 @@ def load_config(path: Path | None = None) -> Config:
     return config
 
 
+def set_source_enabled_in_file(path: Path, name: str, enabled: bool) -> None:
+    """Flip `[sources.<name>].enabled` (adding the section and the order
+    entry as needed) with a *surgical* text edit.
+
+    The full-file emitter in config_writer drops sections it does not know
+    (e.g. [server]), so runtime toggles must not rewrite the whole file.
+    The result is re-parsed before being written back; a malformed outcome
+    raises instead of corrupting the config.
+    """
+    import re
+
+    path = Path(path)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+
+    # --- 1. make sure the name is in [sources].order -----------------------
+    order_match = re.search(r"(?ms)^order\s*=\s*\[.*?\]", text)
+    current_order: list[str] = []
+    if order_match:
+        arr = order_match.group(0)[order_match.group(0).index("["):]
+        current_order = [str(v) for v in tomllib.loads("x = " + arr)["x"]]
+    if name not in current_order:
+        new_order = current_order + [name]
+        one_line = "order = [" + ", ".join(f'"{n}"' for n in new_order) + "]"
+        if order_match:
+            text = text[:order_match.start()] + one_line + text[order_match.end():]
+        else:
+            text = text.rstrip("\n") + f"\n\n[sources]\n{one_line}\n"
+
+    # --- 2. add or update the [sources.<name>] section ---------------------
+    section_re = re.compile(rf"(?ms)^\[sources\.{re.escape(name)}\]\s*$")
+    m = section_re.search(text)
+    flag = "true" if enabled else "false"
+    if m:
+        # section span: until the next header or EOF
+        span_end = re.search(r"(?m)^\[", text[m.end():])
+        body_end = m.end() + (span_end.start() if span_end else len(text[m.end():]))
+        body = text[m.end():body_end]
+        if re.search(r"(?m)^enabled\s*=", body):
+            body = re.sub(r"(?m)^enabled\s*=\s*\S+.*$", f"enabled = {flag}", body, count=1)
+        else:
+            body = f"\nenabled = {flag}" + (body if body.startswith("\n") or not body else "\n" + body)
+        text = text[:m.end()] + body + text[body_end:]
+    else:
+        text = text.rstrip("\n") + f"\n\n[sources.{name}]\nenabled = {flag}\n"
+
+    # --- 3. validate before writing -----------------------------------------
+    parsed = tomllib.loads(text)
+    section = (parsed.get("sources", {}) or {})
+    if name not in [str(v) for v in section.get("order", [])]:
+        raise ConfigError(f"failed to add {name!r} to sources order")
+    if (section.get(name, {}) or {}).get("enabled") is not enabled:
+        raise ConfigError(f"failed to set [sources.{name}].enabled = {flag}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
 def write_default_config(target: Path = DEFAULT_CONFIG_PATH) -> Path:
     """Copy the bundled example config into `target` if it does not exist."""
     target = Path(target)
