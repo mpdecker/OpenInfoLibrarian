@@ -665,6 +665,68 @@ def create_app(config_path: Path) -> FastAPI:
         docs = db.search_pdf_content(q, limit=limit)
         return {"query": q, "count": len(docs), "documents": [d.model_dump(mode="json") for d in docs]}
 
+    @app.get("/search", tags=["Search"])
+    async def search_metadata(q: str, limit: int = 8) -> dict[str, Any]:
+        """Multi-source metadata search: results are merged across sources,
+        deduplicated (DOI > ISBN > normalized title), and ranked with
+        PDF-available hits first. Read-only — safe on public instances."""
+        q = (q or "").strip()
+        if not q:
+            raise HTTPException(status_code=400, detail="q is required")
+        limit = max(1, min(limit, 25))
+
+        from documentcrawler.fetcher import Fetcher
+        from documentcrawler.searcher.aggregate import MultiSearcher, SearchQuery
+
+        options: dict[str, dict[str, Any]] = {}
+        cr_mailto = (cfg.metadata.get("crossref") or {}).get("mailto")
+        oa_mailto = (cfg.metadata.get("openalex") or {}).get("mailto")
+        if cr_mailto:
+            options["crossref"] = {"mailto": cr_mailto}
+        if oa_mailto:
+            options["openalex"] = {"mailto": oa_mailto}
+
+        async with Fetcher(
+            cfg.fetcher,
+            timeout_s=cfg.general.request_timeout_s,
+            max_retries=1,
+        ) as fetcher:
+            result = await MultiSearcher(fetcher).search(
+                SearchQuery(
+                    text=q,
+                    kind="auto",
+                    sources=["crossref", "openalex", "arxiv", "openlibrary"],
+                    limit_per_source=6,
+                    overall_timeout_s=12.0,
+                    options_per_source=options,
+                )
+            )
+
+        hits = result.merged[:limit]
+        return {
+            "query": q,
+            "count": len(hits),
+            "results": [
+                {
+                    "title": h.title,
+                    "authors": h.authors[:6],
+                    "year": h.year,
+                    "doi": h.doi,
+                    "isbn": h.isbn,
+                    "container": h.container,
+                    "url": h.url,
+                    "pdf_url": h.pdf_url,
+                    "has_pdf": h.has_pdf,
+                    "sources": sorted(h.extra.get("contributors") or []),
+                    "score": round(float(h.score), 3),
+                }
+                for h in hits
+            ],
+            "source_errors": {
+                r.source: r.error for r in result.runs if r.error
+            },
+        }
+
     @app.post("/db/rerank", tags=["Database"])
     async def db_rerank() -> dict[str, Any]:
         """Re-calculate and re-rank document priorities dynamically."""

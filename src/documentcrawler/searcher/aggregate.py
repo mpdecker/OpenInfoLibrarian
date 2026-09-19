@@ -133,6 +133,7 @@ class MultiSearcher:
                     self._stream_merge_into(run.hits, bucket)
                 if progress_cb:
                     progress_cb("searcher_done", {"source": run.source, "count": len(run.hits), "error": run.error})
+            bucket = self._post_merge_by_title(bucket)
             merged = list(bucket.values())
             merged.sort(key=lambda x: (x.has_pdf, _combined_score(x)), reverse=True)
             return SearchResult(query=query, runs=runs, merged=merged)
@@ -161,6 +162,53 @@ class MultiSearcher:
             better = MultiSearcher._backfill(better, worse)
             bucket[key] = better
 
+    @staticmethod
+    def _post_merge_by_title(bucket: dict[str, SearchHit]) -> dict[str, SearchHit]:
+        """Second dedupe pass over the primary buckets.
+
+        The primary key hierarchy (DOI > ISBN > title+year) leaves one real
+        duplicate class behind: the *same* paper arriving once with an
+        identifier (``doi:...``) and once without (``title:...``), or with
+        print vs online years a year apart. Merge those by normalized title,
+        keeping the identifier-bearing / PDF-bearing / higher-scored entry.
+        """
+        from documentcrawler.searcher.base import _normalize_title
+
+        by_title: dict[str, list[str]] = {}
+        for key, hit in bucket.items():
+            if not hit.title:
+                continue
+            t = _normalize_title(hit.title)
+            # Degenerate titles (everything stripped but one short word,
+            # e.g. "Paper 0" -> "paper") carry no signal — grouping by them
+            # would collapse distinct papers.
+            if len(t.split()) >= 2 and len(t) >= 8:
+                by_title.setdefault(t, []).append(key)
+
+        for keys in by_title.values():
+            if len(keys) < 2:
+                continue
+            entries = [(key, bucket[key]) for key in keys]
+            keep_idx = max(
+                range(len(entries)),
+                key=lambda i: (
+                    bool(entries[i][1].doi) or bool(entries[i][1].isbn),
+                    entries[i][1].has_pdf,
+                    _combined_score(entries[i][1]),
+                ),
+            )
+            keep_key, keep = entries[keep_idx]
+            for key, worse in entries:
+                if key == keep_key:
+                    continue
+                if keep.year and worse.year and abs(keep.year - worse.year) > 1:
+                    continue  # same title, different papers/editions
+                MultiSearcher._record_alt(keep, worse)
+                keep = MultiSearcher._backfill(keep, worse)
+                del bucket[key]
+            bucket[keep_key] = keep
+        return bucket
+
     def _merge(self, runs: list[SourceRun]) -> list[SearchHit]:
         """Dedupe by (DOI > ISBN > normalized title+year), preferring entries
         with a `pdf_url` and higher score."""
@@ -186,6 +234,7 @@ class MultiSearcher:
                 # Backfill missing metadata from worse → better.
                 better = MultiSearcher._backfill(better, worse)
                 bucket[key] = better
+        bucket = self._post_merge_by_title(bucket)
         merged = list(bucket.values())
         merged.sort(key=lambda x: (x.has_pdf, _combined_score(x)), reverse=True)
         return merged

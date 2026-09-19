@@ -309,3 +309,42 @@ def test_document_file_errors(tmp_path):
         resp = tc.get(f"/documents/{gone_id}/file")
         assert resp.status_code == 410
         assert "no longer available" in resp.json()["error"]["message"]
+
+
+def test_search_endpoint_returns_merged_hits(client, monkeypatch):
+    from types import SimpleNamespace
+    from documentcrawler.searcher import aggregate
+    from documentcrawler.searcher.base import SearchHit
+
+    class FakeMultiSearcher:
+        def __init__(self, fetcher):
+            pass
+
+        async def search(self, query):
+            # Pre-merged as MultiSearcher would: one deduped hit, both
+            # sources as contributors, PDF-bearing.
+            merged_hit = SearchHit(source="crossref", title="Paper One", doi="10.1/a",
+                                   year=2020, score=0.9, pdf_url="https://x.example/a.pdf")
+            merged_hit.extra["contributors"] = {"crossref", "openalex"}
+            return SimpleNamespace(
+                runs=[SimpleNamespace(source="crossref", hits=[merged_hit], elapsed_s=0.1, error=None),
+                      SimpleNamespace(source="semantic_scholar", hits=[], elapsed_s=0.1, error="rate limited")],
+                merged=[merged_hit],
+            )
+
+    monkeypatch.setattr(aggregate, "MultiSearcher", FakeMultiSearcher)
+    resp = client.get("/search?q=paper+one")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1  # deduped across sources
+    hit = data["results"][0]
+    assert hit["title"] == "Paper One"
+    assert hit["has_pdf"] is True
+    assert set(hit["sources"]) == {"crossref", "openalex"}
+    assert data["source_errors"] == {"semantic_scholar": "rate limited"}
+
+
+def test_search_endpoint_requires_query(client):
+    resp = client.get("/search?q=")
+    assert resp.status_code == 400
+    assert "q is required" in resp.json()["error"]["message"]

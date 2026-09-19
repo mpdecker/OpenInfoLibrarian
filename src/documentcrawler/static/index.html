@@ -59,22 +59,63 @@
   }
   .pill.ok { color: var(--ok); background: #dcfce7; }
   .pill.bad { color: var(--bad); background: #fee2e2; }
+  .pill.info { color: var(--brand-dark); background: #e0f2fe; }
   .result h2 { font-size: 20px; margin: 0 0 10px; line-height: 1.35; }
   .meta { color: var(--muted); font-size: 15px; margin: 2px 0; }
   .meta b { color: var(--ink); font-weight: 600; }
   .actions { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
-  .actions a {
+  .actions a, .actions button {
     text-decoration: none; font-weight: 600; font-size: 15px; padding: 10px 16px;
     border-radius: 8px; border: 1.5px solid var(--brand); color: var(--brand);
+    background: transparent; cursor: pointer; font-family: inherit;
   }
-  .actions a.primary { background: var(--brand); color: #fff; }
-  .actions a:hover { opacity: .85; }
+  .actions a.primary, .actions button.primary { background: var(--brand); color: #fff; }
+  .actions a:hover, .actions button:hover { opacity: .85; }
   .footnote { color: var(--muted); font-size: 13px; margin-top: 16px; }
+
+  /* search-result picker */
+  .hit {
+    border-bottom: 1px solid var(--line); padding: 16px 4px; display: flex;
+    gap: 14px; align-items: flex-start; justify-content: space-between;
+  }
+  .hit:last-child { border-bottom: none; }
+  .hit .info { min-width: 0; }
+  .hit h3 { font-size: 16px; margin: 0 0 4px; line-height: 1.35; }
+  .hit .src { color: var(--muted); font-size: 13px; }
+  .hit .src .pdf { color: var(--ok); font-weight: 600; }
+  .hit button {
+    flex-shrink: 0; font-size: 14px; font-weight: 600; color: #fff;
+    background: var(--brand); border: none; border-radius: 8px;
+    padding: 8px 14px; cursor: pointer;
+  }
+  .hit button:hover { background: var(--brand-dark); }
 
   .notice {
     margin-top: 28px; background: #fef9c3; border: 1px solid #fde68a;
     border-radius: 12px; padding: 16px 20px; color: #713f12;
   }
+
+  /* recent documents panel */
+  details.recent { margin-top: 40px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  details.recent summary {
+    cursor: pointer; padding: 14px 20px; font-weight: 600; font-size: 15px;
+    color: var(--ink); list-style: none; display: flex; align-items: center; gap: 8px;
+  }
+  details.recent summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+  details.recent[open] summary::before { transform: rotate(90deg); }
+  details.recent .body { padding: 0 20px 16px; }
+  .doc {
+    display: flex; gap: 10px; align-items: center; justify-content: space-between;
+    padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px;
+  }
+  .doc .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+  .dot.done { background: var(--ok); } .dot.failed { background: var(--bad); }
+  .dot.pending, .dot.in_progress { background: #f59e0b; }
+  .doc a { color: var(--brand-dark); font-weight: 600; text-decoration: none; flex-shrink: 0; }
+  .exports { display: flex; flex-wrap: wrap; gap: 14px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px; font-size: 13px; }
+  .exports a { color: var(--brand-dark); }
+
   footer { margin-top: 48px; color: var(--muted); font-size: 14px; }
   footer a { color: var(--brand-dark); }
   .hidden { display: none; }
@@ -90,16 +131,16 @@
   <form class="search" id="searchForm">
     <label for="q" class="hidden">Paper reference</label>
     <input id="q" name="q" type="text" autocomplete="off" spellcheck="false"
-           placeholder="Paste a DOI, an arXiv link, or a paper title…">
+           placeholder="Search by title, or paste a DOI / link / ISBN…">
     <button id="goBtn" type="submit">Find paper</button>
   </form>
-  <p class="hint">You can paste a DOI (like <code>10.1038/s41586-020-2649-2</code>), a link from doi.org / arXiv / PubMed, an ISBN for books, or just the paper's title.</p>
+  <p class="hint">Paste a DOI (like <code>10.1038/s41586-020-2649-2</code>), a link from doi.org / arXiv / PubMed, an ISBN — or just type what you're looking for and pick from the results.</p>
 
   <div class="examples" id="examples">
-    <span>Try an example:</span>
+    <span>Try:</span>
     <button class="chip" type="button" data-q="10.48550/arXiv.1706.03762">“Attention Is All You Need” (arXiv)</button>
-    <button class="chip" type="button" data-q="10.1371/journal.pone.0025740">A PLOS ONE paper</button>
-    <button class="chip" type="button" data-q="Attention is all you need">Search by title</button>
+    <button class="chip" type="button" data-q="attention is all you need">Search by title</button>
+    <button class="chip" type="button" data-q="crispr gene editing">Topic search</button>
   </div>
 
   <div class="status hidden" id="status" aria-live="polite">
@@ -108,14 +149,22 @@
 
   <div class="notice hidden" id="notice"></div>
 
-  <div class="result hidden" id="result">
-    <span class="pill" id="pill"></span>
-    <h2 id="rTitle"></h2>
-    <p class="meta" id="rAuthors"></p>
-    <p class="meta" id="rJournal"></p>
-    <div class="actions" id="rActions"></div>
-    <p class="footnote" id="rFootnote"></p>
-  </div>
+  <div class="result hidden" id="result"></div>
+
+  <details class="recent hidden" id="recentPanel">
+    <summary>Recent documents</summary>
+    <div class="body">
+      <div id="recentList"></div>
+      <div class="exports">
+        <span style="color:var(--muted)">Export all:</span>
+        <a href="/export?format=bibtex">BibTeX</a>
+        <a href="/export?format=ris">RIS</a>
+        <a href="/export?format=csv">CSV</a>
+        <a href="/export?format=jsonl">JSONL</a>
+        <a href="/export/reading-list?format=html" target="_blank" rel="noopener">Reading list ↗</a>
+      </div>
+    </div>
+  </details>
 
   <footer>
     Only <b>legitimate open-access sources</b> are searched (Unpaywall, OpenAlex, arXiv, PubMed Central, DOAJ).
@@ -126,9 +175,6 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const NOTICE_MESSAGES = {
-  gone: "This demo's storage is temporary, so the file may no longer be here. Try finding the paper again, or use the publisher's page.",
-};
 
 function parseQuery(raw) {
   const v = raw.trim();
@@ -161,15 +207,16 @@ function setStatus(text) {
 }
 function clearOutput() {
   ["status", "notice", "result"].forEach((id) => $(id).classList.add("hidden"));
+  $("result").innerHTML = "";
 }
 
-async function findPaper(raw) {
-  const body = parseQuery(raw);
+/* ---------- acquisition ---------- */
+
+async function acquire(body, elapsedLabel) {
   const started = Date.now();
   const tick = setInterval(() => {
     const s = Math.round((Date.now() - started) / 1000);
-    setStatus(s < 6 ? "Looking for your paper…"
-      : "Still searching — checking several open-access sources (this can take up to 30 seconds)… " + s + "s");
+    setStatus((elapsedLabel || "Getting your paper") + "… checking open-access sources (up to 30s)… " + s + "s");
   }, 1000);
   try {
     const resp = await fetch("/acquire/sync", {
@@ -185,30 +232,37 @@ async function findPaper(raw) {
   }
 }
 
-function render(doc) {
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderDoc(doc) {
   const ok = doc.status === "done" && doc.sha256;
   $("status").classList.add("hidden");
 
-  const pill = $("pill");
-  pill.className = "pill " + (ok ? "ok" : "bad");
-  pill.textContent = ok ? "✓ PDF found" : "✕ No free copy found";
-
-  $("rTitle").textContent = doc.title || "(untitled paper)";
-
+  const el = $("result");
+  const pill = ok ? "✓ PDF found" : "✕ No free copy found";
+  const pillCls = ok ? "ok" : "bad";
   const authors = (doc.authors || []).join(", ");
-  $("rAuthors").innerHTML = authors
-    ? `<b>${escapeHtml(authors)}</b>${doc.year ? " · " + doc.year : ""}`
-    : (doc.year ? "<b>" + doc.year + "</b>" : "");
-  $("rJournal").textContent = "";
+  const prov = ((doc.enriched || {}).enrich_providers) || [];
+  const bits = [];
+  if (prov.length) bits.push("Metadata found via: " + prov.join(", ") + ".");
+  if (doc.error) bits.push(friendlyError(doc.error));
+
+  el.innerHTML = `
+    <span class="pill ${pillCls}">${pill}</span>
+    <h2>${escapeHtml(doc.title || "(untitled paper)")}</h2>
+    ${authors || doc.year ? `<p class="meta"><b>${escapeHtml(authors)}</b>${doc.year ? " · " + doc.year : ""}</p>` : ""}
+    <div class="actions" id="rActions"></div>
+    ${bits.length ? `<p class="footnote">${escapeHtml(bits.join(" "))}</p>` : ""}`;
 
   const actions = $("rActions");
-  actions.innerHTML = "";
   if (ok) {
     const dl = document.createElement("a");
     dl.className = "primary";
     dl.href = "/documents/" + doc.id + "/file";
     dl.textContent = "⬇ Download PDF";
-    dl.addEventListener("click", () => setTimeout(() => showNoticeIfGone(doc), 4000));
     actions.appendChild(dl);
   }
   if (doc.doi) {
@@ -219,22 +273,91 @@ function render(doc) {
     pub.textContent = "View at publisher ↗";
     actions.appendChild(pub);
   }
-
-  const prov = ((doc.enriched || {}).enrich_providers) || [];
-  const bits = [];
-  if (prov.length) bits.push("Metadata found via: " + prov.join(", ") + ".");
-  if (doc.error) bits.push(friendlyError(doc.error));
-  $("rFootnote").textContent = bits.join(" ");
-
-  $("result").classList.remove("hidden");
+  el.classList.remove("hidden");
+  loadRecent();
 }
 
-async function showNoticeIfGone(doc) {
-  // If the download 404s (ephemeral demo storage), explain it in plain words.
+/* ---------- search + picker ---------- */
+
+async function runSearch(q) {
+  setStatus("Searching…");
+  const resp = await fetch("/search?q=" + encodeURIComponent(q));
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok || !data) throw new Error((data && data.error && data.error.message) || "HTTP " + resp.status);
+  return data;
+}
+
+function renderHits(query, results) {
+  $("status").classList.add("hidden");
+  const el = $("result");
+  if (!results.length) {
+    showNotice("No papers matched “" + query + "”. Try fewer or different words — e.g. just the main title.");
+    return;
+  }
+  el.innerHTML = `
+    <span class="pill info">${results.length} result${results.length > 1 ? "s" : ""}</span>
+    <h2 style="font-size:17px;color:var(--muted);font-weight:500">Pick the paper you meant:</h2>
+    <div id="hitList"></div>`;
+  const list = $("hitList");
+  results.forEach((h) => {
+    const row = document.createElement("div");
+    row.className = "hit";
+    const meta = [
+      h.authors && h.authors.length ? escapeHtml(h.authors.slice(0, 3).join(", ") + (h.authors.length > 3 ? " et al." : "")) : "",
+      h.year || "",
+      h.container ? escapeHtml(h.container) : "",
+    ].filter(Boolean).join(" · ");
+    row.innerHTML = `
+      <div class="info">
+        <h3>${escapeHtml(h.title || "(untitled)")}</h3>
+        <div class="src">${meta}${meta ? " · " : ""}${(h.sources || []).join(", ")}
+          ${h.has_pdf ? ' · <span class="pdf">PDF likely available</span>' : ""}</div>
+      </div>`;
+    const btn = document.createElement("button");
+    btn.textContent = "Get PDF";
+    btn.addEventListener("click", async () => {
+      clearOutput();
+      $("goBtn").disabled = true;
+      try {
+        const body = h.doi ? { doi: h.doi }
+          : h.isbn ? { isbn: h.isbn }
+          : { title: h.title, authors: h.authors || [], year: h.year || undefined };
+        const doc = await acquire(body, "Getting “" + (h.title || "").slice(0, 40) + "”");
+        renderDoc(doc);
+      } catch (err) {
+        showNotice(friendlyError(String(err && err.message || err)));
+      } finally {
+        $("goBtn").disabled = false;
+      }
+    });
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+  el.classList.remove("hidden");
+}
+
+/* ---------- recent documents ---------- */
+
+async function loadRecent() {
   try {
-    const r = await fetch("/documents/" + doc.id + "/file", { method: "HEAD" });
-    if (r.status >= 400) showNotice(NOTICE_MESSAGES.gone);
-  } catch (_) { /* network hiccup — ignore */ }
+    const resp = await fetch("/queue");
+    const q = await resp.json();
+    const items = (q.items || []).slice(0, 8);
+    const panel = $("recentPanel");
+    if (!q.total && !items.length) { panel.classList.add("hidden"); return; }
+    panel.classList.remove("hidden");
+    const list = $("recentList");
+    list.innerHTML = "";
+    items.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "doc";
+      const title = d.title || d.doi || "(untitled)";
+      const link = d.file_path ? ` <a href="/documents/${d.id}/file">PDF</a>` : "";
+      row.innerHTML = `<span class="t"><span class="dot ${d.status}"></span>${escapeHtml(title)}</span>${link}`;
+      list.appendChild(row);
+    });
+    if (!items.length) list.innerHTML = '<p class="meta">Nothing here yet.</p>';
+  } catch (_) { /* panel stays hidden */ }
 }
 
 function showNotice(text) {
@@ -242,10 +365,7 @@ function showNotice(text) {
   $("notice").classList.remove("hidden");
 }
 
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
+/* ---------- wiring ---------- */
 
 $("searchForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
@@ -253,10 +373,17 @@ $("searchForm").addEventListener("submit", async (ev) => {
   if (!q) { $("q").focus(); return; }
   clearOutput();
   $("goBtn").disabled = true;
-  setStatus("Looking for your paper…");
+  const parsed = parseQuery(q);
   try {
-    const doc = await findPaper(q);
-    render(doc);
+    if ("title" in parsed) {
+      setStatus("Searching…");
+      const data = await runSearch(q);
+      renderHits(q, data.results || []);
+    } else {
+      setStatus("Looking for your paper…");
+      const doc = await acquire(parsed);
+      renderDoc(doc);
+    }
   } catch (err) {
     $("status").classList.add("hidden");
     showNotice(friendlyError(String(err && err.message || err)));
@@ -271,6 +398,8 @@ document.querySelectorAll(".chip").forEach((chip) => {
     $("searchForm").requestSubmit();
   });
 });
+
+loadRecent();
 </script>
 </body>
 </html>
