@@ -56,10 +56,12 @@ to leak into it.
 
 ## Smoke check
 
-- [ ] `GET /` returns the service landing (`mode: public_demo` on the demo)
+- [ ] `GET /` in a browser shows the "Document Finder" UI; with `Accept: application/json` returns the JSON service description (`mode: public_demo` on the demo)
 - [ ] `GET /health` → `{"status": "ok"}`
 - [ ] `POST /acquire/sync` with a known OA DOI returns `status: done` and a
       `sha256`, with `enriched.enrich_providers` listing who answered
+- [ ] `GET /documents/{id}/file` streams the PDF (410 with a friendly message
+      once demo storage has recycled)
 - [ ] `POST /acquire` on the demo → 400; `POST /webhooks` → 403
 - [ ] Every error body uses the `{"error": {"code", "message"}}` envelope
 

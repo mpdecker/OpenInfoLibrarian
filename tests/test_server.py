@@ -235,3 +235,77 @@ def test_acquire_sync_reports_enrich_providers(client):
     body = resp.json()
     assert "enriched" in body
     assert isinstance(body["enriched"].get("enrich_providers"), list)
+
+
+# -----------------------------------------------------------------------------
+# Web UI + file download
+# -----------------------------------------------------------------------------
+
+
+def test_root_serves_html_for_browsers(client):
+    resp = client.get("/", headers={"accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Document Finder" in resp.text
+    assert "/acquire/sync" in resp.text  # the UI talks to the API
+
+
+def test_root_serves_json_for_api_clients(client):
+    resp = client.get("/", headers={"accept": "application/json"})
+    assert resp.status_code == 200
+    assert resp.json()["service"]
+
+
+def _file_test_app(tmp_path, make_file: bool):
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[general]\ndownload_dir = "{dl.as_posix()}"\ndb_path = "{(tmp_path / "crawler.db").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    app = create_app(config_path)
+    pdf = dl / "Smith_2020_paper.pdf"
+    if make_file:
+        pdf.write_bytes(b"%PDF-1.7 fake-bytes-for-tests")
+    return app, pdf
+
+
+def test_document_file_download(tmp_path):
+    from documentcrawler.db import Database
+    from documentcrawler.models import DocStatus, DocumentQuery
+
+    app, pdf = _file_test_app(tmp_path, make_file=True)
+    # Seed rows with our own connection (the app's handle is thread-bound).
+    db = Database(tmp_path / "crawler.db")
+    doc_id = db.add_query(DocumentQuery(doi="10.1/x"))
+    db.set_status(doc_id, DocStatus.DONE, file_path=str(pdf), sha256="x" * 64)
+    db.close()
+
+    with TestClient(app) as tc:
+        resp = tc.get(f"/documents/{doc_id}/file")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.content.startswith(b"%PDF")
+        assert "attachment" in resp.headers.get("content-disposition", "")
+        assert "Smith_2020_paper.pdf" in resp.headers.get("content-disposition", "")
+
+
+def test_document_file_errors(tmp_path):
+    from documentcrawler.db import Database
+    from documentcrawler.models import DocStatus, DocumentQuery
+
+    app, pdf = _file_test_app(tmp_path, make_file=False)  # done doc, but file vanished
+    db = Database(tmp_path / "crawler.db")
+    gone_id = db.add_query(DocumentQuery(doi="10.1/gone"))
+    db.set_status(gone_id, DocStatus.DONE, file_path=str(pdf), sha256="x" * 64)
+    nofile_id = db.add_query(DocumentQuery(doi="10.1/nofile"))
+    db.close()
+
+    with TestClient(app) as tc:
+
+        assert tc.get("/documents/999999/file").status_code == 404
+        assert tc.get(f"/documents/{nofile_id}/file").status_code == 404
+        resp = tc.get(f"/documents/{gone_id}/file")
+        assert resp.status_code == 410
+        assert "no longer available" in resp.json()["error"]["message"]

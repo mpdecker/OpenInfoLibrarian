@@ -111,8 +111,13 @@ directory, and tweak the filename template.
 
 ```bash
 pip install -e .[serve]
-documentcrawler serve --port 8099      # interactive docs at /docs
+documentcrawler serve --port 8099
 ```
+
+Opening the root URL in a **browser** gives a plain search form ("Document
+Finder"): paste a DOI / arXiv link / title, get the paper's details and a
+PDF download button, with friendly explanations when a paper isn't freely
+available. API clients hitting `/` still get the JSON service description.
 
 The server shares `config.toml` and the SQLite database with the CLI/GUI.
 With `[server].public_demo = true` it runs in demo mode: no background

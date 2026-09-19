@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -112,6 +112,8 @@ class ErrorResponse(BaseModel):
 
 
 GRACEFUL_SHUTDOWN_S = 30
+
+_UI_HTML_PATH = Path(__file__).parent / "static" / "index.html"
 
 
 def create_app(config_path: Path) -> FastAPI:
@@ -269,13 +271,22 @@ def create_app(config_path: Path) -> FastAPI:
     # --- endpoints -----------------------------------------------------------
 
     @app.get("/", tags=["Health"])
-    async def root() -> dict[str, Any]:
-        """Service landing: what this is and where the docs live."""
+    async def root(request: Request) -> Response:
+        """Service landing.
+
+        Browsers (Accept: text/html) get the human-friendly search UI;
+        API clients keep getting the JSON service description.
+        """
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept and _UI_HTML_PATH.is_file():
+            return FileResponse(_UI_HTML_PATH, media_type="text/html")
+
         info: dict[str, Any] = {
             "service": "DocumentCrawler Acquisition Server",
             "version": __version__,
             "documentation": "/docs",
             "openapi": "/openapi.json",
+            "web_interface": "/ (send Accept: text/html for the browser UI)",
             "endpoints": {
                 "health": "/health",
                 "acquire_sync": "/acquire/sync",
@@ -291,7 +302,7 @@ def create_app(config_path: Path) -> FastAPI:
                 "Database-maintenance endpoints under /db/* (except stats and audit-health) are disabled.",
                 "Storage is ephemeral serverless /tmp state — do not rely on /queue or /jobs persisting between calls.",
             ]
-        return info
+        return JSONResponse(content=info)
 
     @app.get("/health", response_model=HealthResponse, tags=["Health"])
     async def health() -> HealthResponse:
@@ -465,6 +476,31 @@ def create_app(config_path: Path) -> FastAPI:
             error=doc.error,
             enriched=doc.enriched,
         )
+
+    @app.get("/documents/{doc_id}/file", tags=["Acquisition"])
+    async def get_document_file(doc_id: int) -> FileResponse:
+        """Stream the downloaded file for a document (used by the web UI)."""
+        db: Database = app.state.db
+        doc = db.get(doc_id)
+        if doc is None or not doc.file_path:
+            raise HTTPException(status_code=404, detail=f"No downloaded file for document #{doc_id}")
+
+        path = Path(doc.file_path)
+        try:
+            # Stored paths come from our own pipeline, but stay defensive:
+            # never serve anything that escaped the configured download dir.
+            within_root = path.resolve().is_relative_to(cfg.general.download_dir.resolve())
+        except OSError:
+            within_root = False
+        if not within_root:
+            raise HTTPException(status_code=404, detail="File is outside the download directory")
+
+        if not path.is_file():
+            raise HTTPException(
+                status_code=410,
+                detail="The file is no longer available (demo storage is temporary) — find the paper again",
+            )
+        return FileResponse(path, media_type="application/pdf", filename=path.name)
 
     @app.get("/queue", response_model=QueueSummary, tags=["Queue"])
     async def get_queue() -> QueueSummary:

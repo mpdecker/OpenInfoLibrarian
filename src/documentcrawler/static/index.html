@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document Finder — find open-access papers</title>
+<style>
+  :root {
+    --ink: #0f172a; --muted: #64748b; --line: #e2e8f0;
+    --brand: #0369a1; --brand-dark: #075985; --ok: #16a34a; --bad: #dc2626;
+    --card: #ffffff; --bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 20px 80px; }
+  header h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  header p.sub { color: var(--muted); margin: 0 0 28px; font-size: 17px; }
+
+  .search { display: flex; gap: 10px; }
+  .search input {
+    flex: 1; padding: 14px 16px; font-size: 17px; border: 2px solid var(--line);
+    border-radius: 10px; background: var(--card); min-width: 0;
+  }
+  .search input:focus { outline: none; border-color: var(--brand); }
+  .search button {
+    padding: 14px 22px; font-size: 17px; font-weight: 600; color: #fff;
+    background: var(--brand); border: none; border-radius: 10px; cursor: pointer;
+  }
+  .search button:hover { background: var(--brand-dark); }
+  .search button:disabled { opacity: .6; cursor: wait; }
+  .hint { color: var(--muted); font-size: 14px; margin-top: 8px; }
+
+  .examples { margin: 14px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .examples span { color: var(--muted); font-size: 14px; }
+  .chip {
+    font-size: 14px; color: var(--brand-dark); background: #e0f2fe; border: none;
+    border-radius: 999px; padding: 5px 12px; cursor: pointer;
+  }
+  .chip:hover { background: #bae6fd; }
+
+  .status { margin-top: 28px; color: var(--muted); }
+  .spinner {
+    display: inline-block; width: 16px; height: 16px; vertical-align: -3px;
+    border: 2.5px solid var(--line); border-top-color: var(--brand); border-radius: 50%;
+    animation: spin .8s linear infinite; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .result {
+    margin-top: 28px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 22px 24px;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; font-weight: 600;
+    font-size: 15px; padding: 5px 12px; border-radius: 999px; margin-bottom: 14px;
+  }
+  .pill.ok { color: var(--ok); background: #dcfce7; }
+  .pill.bad { color: var(--bad); background: #fee2e2; }
+  .result h2 { font-size: 20px; margin: 0 0 10px; line-height: 1.35; }
+  .meta { color: var(--muted); font-size: 15px; margin: 2px 0; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .actions { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .actions a {
+    text-decoration: none; font-weight: 600; font-size: 15px; padding: 10px 16px;
+    border-radius: 8px; border: 1.5px solid var(--brand); color: var(--brand);
+  }
+  .actions a.primary { background: var(--brand); color: #fff; }
+  .actions a:hover { opacity: .85; }
+  .footnote { color: var(--muted); font-size: 13px; margin-top: 16px; }
+
+  .notice {
+    margin-top: 28px; background: #fef9c3; border: 1px solid #fde68a;
+    border-radius: 12px; padding: 16px 20px; color: #713f12;
+  }
+  footer { margin-top: 48px; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--brand-dark); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📄 Document Finder</h1>
+    <p class="sub">Paste a reference to an academic paper — we'll look for a freely readable copy and download it for you.</p>
+  </header>
+
+  <form class="search" id="searchForm">
+    <label for="q" class="hidden">Paper reference</label>
+    <input id="q" name="q" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Paste a DOI, an arXiv link, or a paper title…">
+    <button id="goBtn" type="submit">Find paper</button>
+  </form>
+  <p class="hint">A DOI looks like <code>10.1038/s41586-020-2649-2</code>. You can also paste the paper's title.</p>
+
+  <div class="examples" id="examples">
+    <span>Try an example:</span>
+    <button class="chip" type="button" data-q="10.48550/arXiv.1706.03762">“Attention Is All You Need” (arXiv)</button>
+    <button class="chip" type="button" data-q="10.1371/journal.pone.0025740">A PLOS ONE paper</button>
+    <button class="chip" type="button" data-q="Attention is all you need">Search by title</button>
+  </div>
+
+  <div class="status hidden" id="status" aria-live="polite">
+    <span class="spinner"></span><span id="statusText">Looking for your paper…</span>
+  </div>
+
+  <div class="notice hidden" id="notice"></div>
+
+  <div class="result hidden" id="result">
+    <span class="pill" id="pill"></span>
+    <h2 id="rTitle"></h2>
+    <p class="meta" id="rAuthors"></p>
+    <p class="meta" id="rJournal"></p>
+    <div class="actions" id="rActions"></div>
+    <p class="footnote" id="rFootnote"></p>
+  </div>
+
+  <footer>
+    Only <b>legitimate open-access sources</b> are searched (Unpaywall, OpenAlex, arXiv, PubMed Central, DOAJ).
+    Some publishers keep papers behind paywalls — for those, we'll point you to the publisher's page.
+    Developers: the underlying <a href="/docs">API documentation</a>.
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const NOTICE_MESSAGES = {
+  gone: "This demo's storage is temporary, so the file may no longer be here. Try finding the paper again, or use the publisher's page.",
+};
+
+function parseQuery(raw) {
+  const v = raw.trim();
+  if (/^doi:\s*/i.test(v))  return { doi: v.replace(/^doi:\s*/i, "") };
+  if (/^10\.\d{4,9}\//i.test(v)) return { doi: v };
+  if (/^https?:\/\//i.test(v)) return { url: v };
+  if (/arxiv\.org\/(?:abs|pdf)\//i.test(v)) return { url: v };
+  return { title: v };
+}
+
+function friendlyError(err) {
+  const e = (err || "").toLowerCase();
+  if (e.includes("recaptcha") || e.includes("proof-of-work"))
+    return "The source hosting this paper is blocking automated downloads right now. Try again in a little while, or use the publisher's page.";
+  if (e.includes("timeout") || e.includes("timed out"))
+    return "The search took too long. Please try again — it often works on a second attempt.";
+  if (e.includes("no source produced") || e.includes("not a pdf"))
+    return "No freely readable copy could be found. Many papers are only available behind a publisher's paywall — try the publisher's page or your library.";
+  if (e.includes("rate"))
+    return "The search services are busy at the moment. Please wait a few seconds and try again.";
+  return "Something went wrong while looking for this paper. Please try again.";
+}
+
+function setStatus(text) {
+  $("status").classList.remove("hidden");
+  $("statusText").textContent = text;
+}
+function clearOutput() {
+  ["status", "notice", "result"].forEach((id) => $(id).classList.add("hidden"));
+}
+
+async function findPaper(raw) {
+  const body = parseQuery(raw);
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - started) / 1000);
+    setStatus(s < 6 ? "Looking for your paper…"
+      : "Still searching — checking several open-access sources (this can take up to 30 seconds)… " + s + "s");
+  }, 1000);
+  try {
+    const resp = await fetch("/acquire/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data) throw new Error((data && data.error && data.error.message) || "HTTP " + resp.status);
+    return data;
+  } finally {
+    clearInterval(tick);
+  }
+}
+
+function render(doc) {
+  const ok = doc.status === "done" && doc.sha256;
+  $("status").classList.add("hidden");
+
+  const pill = $("pill");
+  pill.className = "pill " + (ok ? "ok" : "bad");
+  pill.textContent = ok ? "✓ PDF found" : "✕ No free copy found";
+
+  $("rTitle").textContent = doc.title || "(untitled paper)";
+
+  const authors = (doc.authors || []).join(", ");
+  $("rAuthors").innerHTML = authors
+    ? `<b>${escapeHtml(authors)}</b>${doc.year ? " · " + doc.year : ""}`
+    : (doc.year ? "<b>" + doc.year + "</b>" : "");
+  $("rJournal").textContent = "";
+
+  const actions = $("rActions");
+  actions.innerHTML = "";
+  if (ok) {
+    const dl = document.createElement("a");
+    dl.className = "primary";
+    dl.href = "/documents/" + doc.id + "/file";
+    dl.textContent = "⬇ Download PDF";
+    dl.addEventListener("click", () => setTimeout(() => showNoticeIfGone(doc), 4000));
+    actions.appendChild(dl);
+  }
+  if (doc.doi) {
+    const pub = document.createElement("a");
+    pub.href = "https://doi.org/" + encodeURIComponent(doc.doi);
+    pub.target = "_blank";
+    pub.rel = "noopener";
+    pub.textContent = "View at publisher ↗";
+    actions.appendChild(pub);
+  }
+
+  const prov = ((doc.enriched || {}).enrich_providers) || [];
+  const bits = [];
+  if (prov.length) bits.push("Metadata found via: " + prov.join(", ") + ".");
+  if (doc.error) bits.push(friendlyError(doc.error));
+  $("rFootnote").textContent = bits.join(" ");
+
+  $("result").classList.remove("hidden");
+}
+
+async function showNoticeIfGone(doc) {
+  // If the download 404s (ephemeral demo storage), explain it in plain words.
+  try {
+    const r = await fetch("/documents/" + doc.id + "/file", { method: "HEAD" });
+    if (r.status >= 400) showNotice(NOTICE_MESSAGES.gone);
+  } catch (_) { /* network hiccup — ignore */ }
+}
+
+function showNotice(text) {
+  $("notice").textContent = text;
+  $("notice").classList.remove("hidden");
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+$("searchForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) { $("q").focus(); return; }
+  clearOutput();
+  $("goBtn").disabled = true;
+  setStatus("Looking for your paper…");
+  try {
+    const doc = await findPaper(q);
+    render(doc);
+  } catch (err) {
+    $("status").classList.add("hidden");
+    showNotice(friendlyError(String(err && err.message || err)));
+  } finally {
+    $("goBtn").disabled = false;
+  }
+});
+
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    $("q").value = chip.dataset.q;
+    $("searchForm").requestSubmit();
+  });
+});
+</script>
+</body>
+</html>
