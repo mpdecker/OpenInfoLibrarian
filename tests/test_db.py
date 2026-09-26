@@ -235,3 +235,16 @@ def test_source_diagnostics(tmp_path):
     assert stats[0]["success_rate"] == 100.0
     db.close()
 
+
+
+def test_claim_document_atomic(tmp_db):
+    from documentcrawler.models import DocStatus, DocumentQuery
+
+    doc_id = tmp_db.add_query(DocumentQuery(doi="10.1/claim"))
+    assert tmp_db.claim_document(doc_id) is True       # pending -> in_progress
+    assert tmp_db.claim_document(doc_id) is False      # second claimant loses
+    assert tmp_db.get(doc_id).status == DocStatus.IN_PROGRESS
+
+    # a DONE row can never be claimed again
+    tmp_db.set_status(doc_id, DocStatus.DONE, file_path="x.pdf", sha256="s")
+    assert tmp_db.claim_document(doc_id) is False

@@ -396,10 +396,18 @@ def create_app(config_path: Path) -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail="No DOI, title, ISBN, or URL provided")
 
-        timeout_s = timeout if timeout is not None else 25
-        if not (5 <= timeout_s <= 25):
-            raise HTTPException(status_code=400,
-                                detail="timeout must be between 5 and 25 seconds for /acquire/sync")
+        # The tight budget exists for serverless request limits; a
+        # self-hosted instance (which may have slow shadow-library mirrors
+        # enabled) can afford — and needs — a longer one.
+        is_demo = app.state.config.server.public_demo
+        default_timeout_s = 25 if is_demo else 90
+        max_timeout_s = 25 if is_demo else 300
+        timeout_s = timeout if timeout is not None else default_timeout_s
+        if not (5 <= timeout_s <= max_timeout_s):
+            raise HTTPException(
+                status_code=400,
+                detail=f"timeout must be between 5 and {max_timeout_s} seconds for /acquire/sync",
+            )
 
         db: Database = app.state.db
         try:
@@ -420,7 +428,10 @@ def create_app(config_path: Path) -> FastAPI:
             await asyncio.wait_for(pipeline.run([doc]), timeout=timeout_s + 5)
         except TimeoutError:
             cancel_event.set()
-            db.set_status(doc.id, DocStatus.FAILED, error="acquire/sync: request timed out")
+            current = db.get(doc_id)
+            if current is None or current.status != DocStatus.DONE:
+                db.set_status(doc.id, DocStatus.FAILED,
+                              error="acquire/sync: request timed out")
 
         result = db.get(doc_id)
         if result is None:
@@ -782,7 +793,28 @@ def create_app(config_path: Path) -> FastAPI:
                 )
             )
 
-        hits = result.merged[:limit]
+        # Rank for a human picker by *query relevance*: searcher scores are
+        # source-relative (an engine's top hit self-scores ~1.0 even for a
+        # weak match), so an exact title match from one source must not
+        # lose to loosely-related hits from another. Title similarity is
+        # the primary key; source score and PDF availability break ties.
+        def _norm_text(t: str) -> str:
+            return " ".join("".join(c.lower() if c.isalnum() else " " for c in t).split())
+
+        def _relevance(h: Any) -> tuple[float, float, bool]:
+            if h.title:
+                try:
+                    from rapidfuzz import fuzz
+
+                    sim = fuzz.token_set_ratio(_norm_text(q), _norm_text(h.title)) / 100.0
+                except ImportError:  # pragma: no cover
+                    sim = 0.0
+            else:
+                sim = 0.0
+            return (round(sim, 2), float(h.score), h.has_pdf)
+
+        ranked = sorted(result.merged, key=_relevance, reverse=True)
+        hits = ranked[:limit]
         return {
             "query": q,
             "count": len(hits),
@@ -800,6 +832,7 @@ def create_app(config_path: Path) -> FastAPI:
                     "has_pdf": h.has_pdf,
                     "sources": sorted(h.extra.get("contributors") or []),
                     "score": round(float(h.score), 3),
+                    "relevance": _relevance(h)[0],
                 }
                 for h in hits
             ],

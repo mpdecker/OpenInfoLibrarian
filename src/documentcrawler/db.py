@@ -585,6 +585,25 @@ class Database:
             (status.value, file_path, sha256, error, _utcnow_iso(), doc_id),
         )
 
+    def claim_document(self, doc_id: int) -> bool:
+        """Atomically transition a document pending -> in_progress.
+
+        Exactly one caller wins; the loser sees False. This is what keeps
+        the background worker and a concurrent /acquire/sync (or two
+        workers) from racing on the same document — the loser would
+        otherwise duplicate source attempts and its timeout could
+        overwrite the winner's terminal status.
+        """
+        cur = self._conn.execute(
+            """
+            UPDATE documents
+               SET status = 'in_progress', updated_at = ?
+             WHERE id = ? AND status = 'pending'
+            """,
+            (_utcnow_iso(), doc_id),
+        )
+        return cur.rowcount > 0
+
     def update_metadata(self, doc_id: int, *, doi: str | None = None,
                         title: str | None = None, authors: list[str] | None = None,
                         year: int | None = None, isbn: str | None = None,
