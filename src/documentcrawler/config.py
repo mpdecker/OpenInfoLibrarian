@@ -64,6 +64,10 @@ class GeneralConfig:
     max_retries: int = 3
     min_pdf_bytes: int = 20480
     pipeline_timeout_s: int = 300
+    # Per-source candidate-search budget. Auto-scaled up when a fetcher
+    # proxy is configured (Tor / rotating pools add several seconds per
+    # mirror probe).
+    source_search_timeout_s: float = 25.0
     log_level: str = "INFO"
 
 
@@ -210,9 +214,12 @@ def _coerce_general(raw: dict[str, Any]) -> GeneralConfig:
     ):
         if key in raw:
             setattr(cfg, key, raw[key])
-    for key in ("workers", "request_timeout_s", "max_retries", "min_pdf_bytes", "pipeline_timeout_s"):
+    for key in ("workers", "request_timeout_s", "max_retries", "min_pdf_bytes",
+                "pipeline_timeout_s"):
         if key in raw:
             setattr(cfg, key, int(raw[key]))
+    if "source_search_timeout_s" in raw:
+        cfg.source_search_timeout_s = float(raw["source_search_timeout_s"])
     return cfg
 
 

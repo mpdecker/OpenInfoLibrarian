@@ -81,7 +81,12 @@ class Pipeline:
         # Per-source candidate-search budget (see _process_one). Generous
         # enough for multi-mirror probing on a healthy network, tight
         # enough that a handful of dead mirrors can't starve a document.
-        self._source_search_budget_s = 25.0
+        # Proxied traffic (Tor / rotating pools) pays several extra seconds
+        # per probe, so scale the budget up when a proxy is configured.
+        budget = getattr(self.config.general, "source_search_timeout_s", 25.0)
+        if getattr(self.config.fetcher, "proxy", None):
+            budget = max(budget, budget * 2.5)
+        self._source_search_budget_s = float(budget)
         self.dry_run = dry_run
         self.circuit_breaker = circuit_breaker or CircuitBreaker()
 
