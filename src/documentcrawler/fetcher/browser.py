@@ -17,11 +17,13 @@ from documentcrawler.storage.writer import looks_like_pdf
 
 
 class BrowserPool:
-    def __init__(self, user_agent: str | None = None, headless: bool = True):
+    def __init__(self, user_agent: str | None = None, headless: bool = True,
+                 proxy: str | None = None):
         if async_playwright is None:
             raise ImportError("playwright is not installed")
         self._ua = user_agent
         self._headless = headless
+        self._proxy = proxy
         self._lock = asyncio.Lock()
         self._pw: Any = None
         self._browser: Any = None
@@ -39,6 +41,9 @@ class BrowserPool:
             }
             if self._ua:
                 kwargs["user_agent"] = self._ua
+            if self._proxy:
+                # socks5h://… → chromium wants socks5://… (remote DNS either way)
+                kwargs["proxy"] = {"server": self._proxy.replace("socks5h://", "socks5://")}
             self._context = await self._browser.new_context(**kwargs)
 
     async def close(self) -> None:

@@ -68,9 +68,28 @@ class GeneralConfig:
 
 
 @dataclass
+class ProxyConfig:
+    """Route requests through a proxy — IP rotation / masking and a fix
+    for DNS-blocked mirrors (SOCKS resolves hostnames remotely).
+
+    Typical values: a rotating-residential pool
+    (``http://user:pass@pool.example:8080``) or local Tor
+    (``socks5h://127.0.0.1:9050``; needs ``httpx[socks]``).
+    """
+
+    url: str | None = None
+    # Route only shadow-library hosts through the proxy (default) so
+    # open-access APIs keep their fast direct paths and polite-pool IPs.
+    shadow_only: bool = True
+    # Extra hostname fragments treated as shadow hosts (substring match).
+    shadow_hosts: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FetcherConfig:
     rate_limits: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_RATE_LIMITS))
     user_agents: list[str] = field(default_factory=lambda: list(_DEFAULT_USER_AGENTS))
+    proxy: ProxyConfig | None = None
 
 
 @dataclass
@@ -211,6 +230,13 @@ def _coerce_fetcher(raw: dict[str, Any]) -> FetcherConfig:
         cfg.user_agents = list(ua["list"])
     elif isinstance(ua, list):
         cfg.user_agents = list(ua)
+    proxy_raw = raw.get("proxy")
+    if isinstance(proxy_raw, dict) and proxy_raw.get("url"):
+        cfg.proxy = ProxyConfig(
+            url=str(proxy_raw["url"]),
+            shadow_only=bool(proxy_raw.get("shadow_only", True)),
+            shadow_hosts=[str(h) for h in proxy_raw.get("shadow_hosts", [])],
+        )
     return cfg
 
 

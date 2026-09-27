@@ -132,6 +132,15 @@ notice, the change is surgically persisted to `config.toml` (so the CLI
 and GUI see it too), and both `/search` and downloads pick it up on the
 next request. The public demo never exposes them.
 
+**IP rotation / masking** (self-hosted): `[fetcher.proxy]` routes
+shadow-library traffic through a proxy — a rotating pool
+(`http://user:pass@pool:8080`) or local Tor (`socks5h://127.0.0.1:9050`,
+needs `pip install httpx[socks]`). Shadow hosts are matched by known
+hostname fragments (extend with `shadow_hosts = [...]`); DNS-blocked
+mirrors come back to life because SOCKS resolves remotely, and the
+Playwright fallback honors the same proxy. Open-access APIs stay direct
+by default (`shadow_only = false` sends everything through it).
+
 A public demo is deployed at
 **https://documentcrawler.vercel.app** (open-access sources only,
 ephemeral storage). Notables:

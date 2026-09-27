@@ -409,3 +409,58 @@ def test_host_circuit_breaker():
 
     fetcher.mark_host_success(url)
     assert fetcher.is_host_healthy(url) is True
+
+
+def test_is_shadow_url_detection():
+    from documentcrawler.fetcher.http import is_shadow_url
+
+    assert is_shadow_url("https://libgen.li/index.php?req=x")
+    assert is_shadow_url("https://sci.bban.top/pdf/10.1/x")
+    assert is_shadow_url("https://annas-archive.gl/search?q=x")
+    assert is_shadow_url("https://z-lib.fm/book/123")
+    assert is_shadow_url("https://evil.example.com/", extra_hosts=["evil.example"])
+    assert not is_shadow_url("https://api.openalex.org/works")
+    assert not is_shadow_url("https://arxiv.org/pdf/1706.03762")
+
+
+def test_proxy_config_coercion(tmp_path):
+    from documentcrawler.config import load_config
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndb_path = "crawler.db"\n\n'
+        "[fetcher.proxy]\n"
+        'url = "socks5h://127.0.0.1:9050"\n'
+        "shadow_only = false\n"
+        'shadow_hosts = ["mymirror.example"]\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.fetcher.proxy is not None
+    assert cfg.fetcher.proxy.url == "socks5h://127.0.0.1:9050"
+    assert cfg.fetcher.proxy.shadow_only is False
+    assert cfg.fetcher.proxy.shadow_hosts == ["mymirror.example"]
+
+
+async def test_proxy_routing_shadow_vs_direct():
+    """Shadow URLs go through the proxy (closed port => connect error to
+    the proxy itself); open-access URLs stay direct and succeed."""
+    import httpx
+
+    from documentcrawler.config import FetcherConfig, ProxyConfig
+    from documentcrawler.fetcher.http import Fetcher
+
+    cfg = FetcherConfig()
+    cfg.proxy = ProxyConfig(url="http://127.0.0.1:9", shadow_only=True)
+
+    async with Fetcher(cfg, timeout_s=10, max_retries=1) as f:
+        # direct path unaffected
+        r = await f.get("https://example.com/", max_retries=1)
+        assert r.status == 200
+
+        # shadow URL routed via the dead proxy: the error mentions the proxy
+        try:
+            await f.get("https://libgen.li/index.php", max_retries=1)
+            raise AssertionError("expected failure through dead proxy")
+        except Exception as e:
+            assert "127.0.0.1:9" in str(e) or isinstance(e, httpx.ConnectError)
