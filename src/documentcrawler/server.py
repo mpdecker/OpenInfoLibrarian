@@ -419,6 +419,13 @@ def create_app(config_path: Path) -> FastAPI:
         if doc is None:
             raise HTTPException(status_code=500, detail="Failed to create document")
 
+        # A previously failed row dedupes back here; reset it so this
+        # request actually retries (the pipeline's atomic claim only
+        # accepts pending rows).
+        if doc.status == DocStatus.FAILED:
+            db.set_status(doc_id, DocStatus.PENDING, error=None)
+            doc = db.get(doc_id) or doc
+
         cfg: Config = app.state.config
         cancel_event = asyncio.Event()
         pipeline = Pipeline(

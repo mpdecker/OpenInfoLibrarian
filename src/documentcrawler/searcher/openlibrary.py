@@ -46,6 +46,29 @@ class OpenLibrarySearcher(Searcher):
             log.debug("openlibrary search failed: %s", e)
             return []
 
+        # OpenLibrary's general index handles citation-like strings poorly
+        # ("Title Author" with the author name appended often matches
+        # nothing); retry with shorter prefixes — authors trail titles.
+        docs = (data or {}).get("docs") or []
+        if kind == "auto" and not docs:
+            words = query.split()
+            retries = []
+            if len(words) > 6:
+                retries.append(" ".join(words[:6]))
+            if len(words) > 1:
+                retries.append(" ".join(words[:-1]))
+            for candidate in dict.fromkeys(retries):
+                if candidate == query:
+                    continue
+                try:
+                    data = await self.fetcher.get_json(
+                        _API, params={"q": candidate, "limit": params["limit"]}
+                    )
+                except Exception:
+                    return []
+                if (data or {}).get("docs"):
+                    break
+
         docs = (data or {}).get("docs") or []
         out: list[SearchHit] = []
         for i, item in enumerate(docs):

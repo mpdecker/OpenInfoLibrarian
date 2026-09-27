@@ -33,7 +33,10 @@ class BrowserPool:
                 return
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(headless=self._headless)
-            kwargs: dict[str, Any] = {"viewport": {"width": 1280, "height": 800}}
+            kwargs: dict[str, Any] = {
+                "viewport": {"width": 1280, "height": 800},
+                "accept_downloads": True,
+            }
             if self._ua:
                 kwargs["user_agent"] = self._ua
             self._context = await self._browser.new_context(**kwargs)
@@ -77,8 +80,40 @@ class BrowserPool:
 
         page = await self._context.new_page()
         tmp_download: Path | None = None
+        # Downloads that start as *navigation* (Content-Disposition:
+        # attachment, e.g. Europe PMC's ?pdf=render) make page.goto raise
+        # "Download is starting"; the download object arrives on this event
+        # handler. Normal pages never fire it, so there is no cost.
+        download_ready: asyncio.Event = asyncio.Event()
+        captured: dict[str, Any] = {}
+
+        def _on_download(d: Any) -> None:
+            captured["download"] = d
+            download_ready.set()
+
+        page.on("download", _on_download)
         try:
-            resp = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            try:
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as e:
+                if "download is starting" not in str(e).lower():
+                    raise
+                resp = None
+            if resp is None:
+                # navigation became a download — wait for it to complete
+                try:
+                    await asyncio.wait_for(download_ready.wait(), timeout=30)
+                except TimeoutError:
+                    raise FetchError(
+                        "browser download never started", url=url) from None
+                d = captured["download"]
+                tmp_download = Path(await d.path())
+                data = tmp_download.read_bytes()
+                if looks_like_pdf(data):
+                    return data
+                raise FetchError(
+                    "browser download was not a PDF", url=url)
+
             with contextlib.suppress(Exception):
                 await page.wait_for_load_state("networkidle", timeout=min(20_000, timeout_ms))
             await page.wait_for_timeout(2500)

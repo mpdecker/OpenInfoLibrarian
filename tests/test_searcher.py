@@ -1622,3 +1622,32 @@ def test_post_merge_keeps_same_title_different_years_apart():
     bucket = {a.dedupe_key(): a, b.dedupe_key(): b}
     merged = MultiSearcher._post_merge_by_title(bucket)
     assert len(merged) == 2  # genuinely different papers/editions
+
+
+def test_openlibrary_falls_back_to_title_words_when_full_query_misses():
+    from documentcrawler.searcher.openlibrary import OpenLibrarySearcher
+
+    calls = []
+
+    class F:
+        async def get_json(self, url, params=None, **kw):
+            calls.append(params)
+            if params and params.get("q") == "Designing Data-Intensive Applications Kleppmann":
+                return {"numFound": 0, "docs": []}
+            return {
+                "numFound": 1,
+                "docs": [{"title": "Designing Data-Intensive Applications",
+                          "author_name": ["Martin Kleppmann"], "first_publish_year": 2017,
+                          "key": "/works/OL123W", "isbn": ["9781449373320"]}],
+            }
+
+    hits = asyncio.run(_run_ol(F()))
+    assert hits and hits[0].title == "Designing Data-Intensive Applications"
+    # the retry dropped the trailing author name
+    assert any((p or {}).get("q") == "Designing Data-Intensive Applications" for p in calls)
+
+
+async def _run_ol(fetcher):
+    from documentcrawler.searcher.openlibrary import OpenLibrarySearcher
+    return await OpenLibrarySearcher(fetcher).search(
+        "Designing Data-Intensive Applications Kleppmann", limit=5)
