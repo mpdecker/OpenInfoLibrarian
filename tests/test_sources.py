@@ -6,6 +6,7 @@ Each source parses one fixture payload — we don't hit live APIs.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from documentcrawler.config import SourceConfig
@@ -497,3 +498,78 @@ def test_arxiv_source_mines_id_from_doi():
     )
     candidates = asyncio.run(source.search(ctx))
     assert candidates and candidates[0].url == "https://arxiv.org/pdf/1706.03762.pdf"
+
+
+def test_pubmed_source_mines_pmid_from_url():
+    from documentcrawler.models import DocumentQuery
+    from documentcrawler.sources.base import SourceContext
+
+    # A pasted PubMed link: elink maps pmid -> pmcid, so the XML fixtures
+    # only need to cover the elink step.
+    elink_xml = """<?xml version="1.0"?>
+    <eLinkResult>
+      <LinkSet>
+        <LinkSetDb>
+          <Link><Id>7759461</Id></Link>
+        </LinkSetDb>
+      </LinkSet>
+    </eLinkResult>"""
+    fetcher = FakeFetcher(text_map={"elink.fcgi": elink_xml})
+    source = _pubmed_source()
+    ctx = SourceContext(
+        query=DocumentQuery(url="https://pubmed.ncbi.nlm.nih.gov/33097646/"),
+        fetcher=fetcher,
+        metadata=type("Metadata", (), {"oa_urls": [], "pmid": None, "pmcid": None, "doi": None})(),
+        options={},
+    )
+    candidates = asyncio.run(source.search(ctx))
+    urls = [c.url for c in candidates]
+    assert any("PMC7759461" in u for u in urls), urls
+
+
+# -----------------------------------------------------------------------------
+# Sci-Hub parser refinement (real captured pages + synthetic traps)
+# -----------------------------------------------------------------------------
+
+def _fixture(name):
+    return (Path(__file__).parent / "fixtures" / name).read_text(encoding="utf-8", errors="replace")
+
+
+def test_scihub_extracts_partner_cdn_link_from_found_page():
+    from documentcrawler.sources.scihub import _extract_pdf_url
+
+    html = _fixture("scihub_found.html")  # real sci-hub.ee page for gkaa1077
+    url = _extract_pdf_url(html, "https://sci-hub.ee")
+    assert url is not None
+    assert "sci.bban.top/pdf/10.1093/nar" in url
+
+
+def test_scihub_verification_page_is_not_a_hit():
+    from documentcrawler.sources.scihub import _extract_pdf_url, _is_verification_page
+
+    html = _fixture("scihub_notfound.html")  # real 'Verification' interstitial
+    assert _is_verification_page(html)
+    # even if something extractable sneaks in, it must yield nothing useful
+    assert _extract_pdf_url(html, "https://sci-hub.ee") is None
+
+
+def test_scihub_never_returns_publisher_links():
+    from documentcrawler.sources.scihub import _extract_pdf_url
+
+    # article page linking the ORIGINAL publisher PDF (the mis-parse that
+    # sent 'scihub' attempts into academic.oup.com's Cloudflare)
+    html = """<html><body>
+      <div id="citation"><a href="https://academic.oup.com/nar/article-pdf/50/D1/D106/42058350/gkab1051.pdf">original</a></div>
+      <iframe src="https://doi.org/10.1093/nar/gkab1051"></iframe>
+    </body></html>"""
+    assert _extract_pdf_url(html, "https://sci-hub.wf") is None
+
+
+def test_scihub_accepts_mirror_relative_downloads():
+    from documentcrawler.sources.scihub import _extract_pdf_url
+
+    html = """<html><body>
+      <button onclick="location.href='/downloads/10.1093/nar/gkab1051.pdf'">save</button>
+    </body></html>"""
+    url = _extract_pdf_url(html, "https://sci-hub.ren")
+    assert url == "https://sci-hub.ren/downloads/10.1093/nar/gkab1051.pdf"

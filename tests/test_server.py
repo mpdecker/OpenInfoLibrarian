@@ -235,3 +235,210 @@ def test_acquire_sync_reports_enrich_providers(client):
     body = resp.json()
     assert "enriched" in body
     assert isinstance(body["enriched"].get("enrich_providers"), list)
+
+
+# -----------------------------------------------------------------------------
+# Web UI + file download
+# -----------------------------------------------------------------------------
+
+
+def test_root_serves_html_for_browsers(client):
+    resp = client.get("/", headers={"accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Document Finder" in resp.text
+    assert "/acquire/sync" in resp.text  # the UI talks to the API
+
+
+def test_root_serves_json_for_api_clients(client):
+    resp = client.get("/", headers={"accept": "application/json"})
+    assert resp.status_code == 200
+    assert resp.json()["service"]
+
+
+def _file_test_app(tmp_path, make_file: bool):
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[general]\ndownload_dir = "{dl.as_posix()}"\ndb_path = "{(tmp_path / "crawler.db").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    app = create_app(config_path)
+    pdf = dl / "Smith_2020_paper.pdf"
+    if make_file:
+        pdf.write_bytes(b"%PDF-1.7 fake-bytes-for-tests")
+    return app, pdf
+
+
+def test_document_file_download(tmp_path):
+    from documentcrawler.db import Database
+    from documentcrawler.models import DocStatus, DocumentQuery
+
+    app, pdf = _file_test_app(tmp_path, make_file=True)
+    # Seed rows with our own connection (the app's handle is thread-bound).
+    db = Database(tmp_path / "crawler.db")
+    doc_id = db.add_query(DocumentQuery(doi="10.1/x"))
+    db.set_status(doc_id, DocStatus.DONE, file_path=str(pdf), sha256="x" * 64)
+    db.close()
+
+    with TestClient(app) as tc:
+        resp = tc.get(f"/documents/{doc_id}/file")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.content.startswith(b"%PDF")
+        assert "attachment" in resp.headers.get("content-disposition", "")
+        assert "Smith_2020_paper.pdf" in resp.headers.get("content-disposition", "")
+
+
+def test_document_file_errors(tmp_path):
+    from documentcrawler.db import Database
+    from documentcrawler.models import DocStatus, DocumentQuery
+
+    app, pdf = _file_test_app(tmp_path, make_file=False)  # done doc, but file vanished
+    db = Database(tmp_path / "crawler.db")
+    gone_id = db.add_query(DocumentQuery(doi="10.1/gone"))
+    db.set_status(gone_id, DocStatus.DONE, file_path=str(pdf), sha256="x" * 64)
+    nofile_id = db.add_query(DocumentQuery(doi="10.1/nofile"))
+    db.close()
+
+    with TestClient(app) as tc:
+
+        assert tc.get("/documents/999999/file").status_code == 404
+        assert tc.get(f"/documents/{nofile_id}/file").status_code == 404
+        resp = tc.get(f"/documents/{gone_id}/file")
+        assert resp.status_code == 410
+        assert "no longer available" in resp.json()["error"]["message"]
+
+
+def test_search_endpoint_returns_merged_hits(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from documentcrawler.searcher import aggregate
+    from documentcrawler.searcher.base import SearchHit
+
+    class FakeMultiSearcher:
+        def __init__(self, fetcher):
+            pass
+
+        async def search(self, query):
+            # Pre-merged as MultiSearcher would: one deduped hit, both
+            # sources as contributors, PDF-bearing.
+            merged_hit = SearchHit(source="crossref", title="Paper One", doi="10.1/a",
+                                   year=2020, score=0.9, pdf_url="https://x.example/a.pdf")
+            merged_hit.extra["contributors"] = {"crossref", "openalex"}
+            return SimpleNamespace(
+                runs=[SimpleNamespace(source="crossref", hits=[merged_hit], elapsed_s=0.1, error=None),
+                      SimpleNamespace(source="semantic_scholar", hits=[], elapsed_s=0.1, error="rate limited")],
+                merged=[merged_hit],
+            )
+
+    monkeypatch.setattr(aggregate, "MultiSearcher", FakeMultiSearcher)
+    resp = client.get("/search?q=paper+one")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1  # deduped across sources
+    hit = data["results"][0]
+    assert hit["title"] == "Paper One"
+    assert hit["has_pdf"] is True
+    assert set(hit["sources"]) == {"crossref", "openalex"}
+    assert data["source_errors"] == {"semantic_scholar": "rate limited"}
+
+
+def test_search_endpoint_requires_query(client):
+    resp = client.get("/search?q=")
+    assert resp.status_code == 400
+    assert "q is required" in resp.json()["error"]["message"]
+
+
+# -----------------------------------------------------------------------------
+# Sources toggles (shadow-library activation)
+# -----------------------------------------------------------------------------
+
+
+def test_sources_listing_and_toggle(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndownload_dir = "downloads"\ndb_path = "crawler.db"\n\n'
+        "[sources]\norder = [\"open_access\", \"arxiv\", \"pubmed\", \"doaj\"]\n",
+        encoding="utf-8",
+    )
+    app = create_app(cfg_path)
+    with TestClient(app) as tc:
+        listing = tc.get("/sources").json()
+        assert listing["can_manage"] is True
+        names = {s["name"]: s for s in listing["sources"]}
+        assert names["scihub"]["kind"] == "shadow" and names["scihub"]["enabled"] is False
+        assert names["open_access"]["kind"] == "open_access"
+
+        # enabling a shadow source requires acknowledgment
+        r = tc.post("/sources/scihub", json={"enabled": True})
+        assert r.status_code == 400
+        assert "acknowledged" in r.json()["error"]["message"]
+
+        r = tc.post("/sources/scihub", json={"enabled": True, "acknowledged": True})
+        assert r.status_code == 200
+        assert r.json()["enabled"] is True
+        assert "scihub" in r.json()["order"]
+
+        # persisted + visible through a fresh listing
+        assert tc.get("/sources").json()["sources"] and any(
+            s["name"] == "scihub" and s["enabled"] for s in tc.get("/sources").json()["sources"]
+        )
+        # open-access source can be disabled too
+        r = tc.post("/sources/doaj", json={"enabled": False})
+        assert r.status_code == 200 and r.json()["enabled"] is False
+
+        # unknown source
+        assert tc.post("/sources/nope", json={"enabled": True}).status_code == 404
+
+
+def test_sources_toggle_blocked_on_public_demo(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndownload_dir = "downloads"\ndb_path = "crawler.db"\n\n'
+        "[server]\npublic_demo = true\n",
+        encoding="utf-8",
+    )
+    app = create_app(cfg_path)
+    with TestClient(app) as tc:
+        listing = tc.get("/sources").json()
+        assert listing["can_manage"] is False and listing["public_demo"] is True
+        r = tc.post("/sources/scihub", json={"enabled": True, "acknowledged": True})
+        assert r.status_code == 403
+
+
+def test_search_includes_enabled_shadow_sources(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from documentcrawler.config import set_source_enabled_in_file
+    from documentcrawler.searcher import aggregate
+    from documentcrawler.searcher.base import SearchHit
+
+    seen = {}
+
+    class FakeMultiSearcher:
+        def __init__(self, fetcher):
+            pass
+
+        async def search(self, query):
+            seen["sources"] = list(query.sources)
+            hit = SearchHit(source="crossref", title="Shadowy Paper", doi="10.1/s", score=0.9)
+            hit.extra["contributors"] = {"crossref"}
+            return SimpleNamespace(runs=[], merged=[hit])
+
+    monkeypatch.setattr(aggregate, "MultiSearcher", FakeMultiSearcher)
+
+    # The shared `client` fixture writes its config into tmp_path; find it
+    # via the app's own state once started, then enable libgen there.
+    client.get("/search?q=x")
+    assert set(seen["sources"]) == {"crossref", "openalex", "arxiv", "openlibrary"}
+
+    from documentcrawler.config import load_config
+    cfg_path = client.app.state.config_path
+    set_source_enabled_in_file(cfg_path, "libgen", True)
+    client.app.state.config = load_config(cfg_path)
+
+    r2 = client.get("/search?q=x")
+    assert "libgen" in seen["sources"]
+    assert "libgen" in r2.json()["sources_used"]

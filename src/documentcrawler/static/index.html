@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document Finder — find open-access papers</title>
+<style>
+  :root {
+    --ink: #0f172a; --muted: #64748b; --line: #e2e8f0;
+    --brand: #0369a1; --brand-dark: #075985; --ok: #16a34a; --bad: #dc2626;
+    --card: #ffffff; --bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 20px 80px; }
+  header h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  header p.sub { color: var(--muted); margin: 0 0 28px; font-size: 17px; }
+
+  .search { display: flex; gap: 10px; }
+  .search input {
+    flex: 1; padding: 14px 16px; font-size: 17px; border: 2px solid var(--line);
+    border-radius: 10px; background: var(--card); min-width: 0;
+  }
+  .search input:focus { outline: none; border-color: var(--brand); }
+  .search button {
+    padding: 14px 22px; font-size: 17px; font-weight: 600; color: #fff;
+    background: var(--brand); border: none; border-radius: 10px; cursor: pointer;
+  }
+  .search button:hover { background: var(--brand-dark); }
+  .search button:disabled { opacity: .6; cursor: wait; }
+  .hint { color: var(--muted); font-size: 14px; margin-top: 8px; }
+
+  .examples { margin: 14px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .examples span { color: var(--muted); font-size: 14px; }
+  .chip {
+    font-size: 14px; color: var(--brand-dark); background: #e0f2fe; border: none;
+    border-radius: 999px; padding: 5px 12px; cursor: pointer;
+  }
+  .chip:hover { background: #bae6fd; }
+
+  .status { margin-top: 28px; color: var(--muted); }
+  .spinner {
+    display: inline-block; width: 16px; height: 16px; vertical-align: -3px;
+    border: 2.5px solid var(--line); border-top-color: var(--brand); border-radius: 50%;
+    animation: spin .8s linear infinite; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .result {
+    margin-top: 28px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 22px 24px;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; font-weight: 600;
+    font-size: 15px; padding: 5px 12px; border-radius: 999px; margin-bottom: 14px;
+  }
+  .pill.ok { color: var(--ok); background: #dcfce7; }
+  .pill.bad { color: var(--bad); background: #fee2e2; }
+  .pill.info { color: var(--brand-dark); background: #e0f2fe; }
+  .result h2 { font-size: 20px; margin: 0 0 10px; line-height: 1.35; }
+  .meta { color: var(--muted); font-size: 15px; margin: 2px 0; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .actions { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .actions a, .actions button {
+    text-decoration: none; font-weight: 600; font-size: 15px; padding: 10px 16px;
+    border-radius: 8px; border: 1.5px solid var(--brand); color: var(--brand);
+    background: transparent; cursor: pointer; font-family: inherit;
+  }
+  .actions a.primary, .actions button.primary { background: var(--brand); color: #fff; }
+  .actions a:hover, .actions button:hover { opacity: .85; }
+  .footnote { color: var(--muted); font-size: 13px; margin-top: 16px; }
+
+  /* search-result picker */
+  .hit {
+    border-bottom: 1px solid var(--line); padding: 16px 4px; display: flex;
+    gap: 14px; align-items: flex-start; justify-content: space-between;
+  }
+  .hit:last-child { border-bottom: none; }
+  .hit .info { min-width: 0; }
+  .hit h3 { font-size: 16px; margin: 0 0 4px; line-height: 1.35; }
+  .hit .src { color: var(--muted); font-size: 13px; }
+  .hit .src .pdf { color: var(--ok); font-weight: 600; }
+  .hit button {
+    flex-shrink: 0; font-size: 14px; font-weight: 600; color: #fff;
+    background: var(--brand); border: none; border-radius: 8px;
+    padding: 8px 14px; cursor: pointer;
+  }
+  .hit button:hover { background: var(--brand-dark); }
+
+  .notice {
+    margin-top: 28px; background: #fef9c3; border: 1px solid #fde68a;
+    border-radius: 12px; padding: 16px 20px; color: #713f12;
+  }
+
+  /* recent documents panel */
+  details.recent { margin-top: 40px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  details.recent summary {
+    cursor: pointer; padding: 14px 20px; font-weight: 600; font-size: 15px;
+    color: var(--ink); list-style: none; display: flex; align-items: center; gap: 8px;
+  }
+  details.recent summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+  details.recent[open] summary::before { transform: rotate(90deg); }
+  details.recent .body { padding: 0 20px 16px; }
+
+  /* sources panel */
+  .srcrow {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px;
+  }
+  .srcrow .n { font-weight: 600; }
+  .srcrow .d { color: var(--muted); font-size: 13px; }
+  .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; position: relative; z-index: 2; }
+  .switch .track {
+    position: absolute; inset: 0; background: #cbd5e1; border-radius: 999px; transition: background .15s;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    background: #fff; border-radius: 50%; transition: left .15s;
+  }
+  .switch input:checked + .track { background: var(--ok); }
+  .switch input:checked + .track::after { left: 21px; }
+  .srcnote { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .locknote { background: #f8fafc; border: 1px dashed var(--line); border-radius: 8px; padding: 12px 14px; color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .doc {
+    display: flex; gap: 10px; align-items: center; justify-content: space-between;
+    padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px;
+  }
+  .doc .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+  .dot.done { background: var(--ok); } .dot.failed { background: var(--bad); }
+  .dot.pending, .dot.in_progress { background: #f59e0b; }
+  .doc a { color: var(--brand-dark); font-weight: 600; text-decoration: none; flex-shrink: 0; }
+  .exports { display: flex; flex-wrap: wrap; gap: 14px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px; font-size: 13px; }
+  .exports a { color: var(--brand-dark); }
+
+  footer { margin-top: 48px; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--brand-dark); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📄 Document Finder</h1>
+    <p class="sub">Paste a reference to an academic paper — we'll look for a freely readable copy and download it for you.</p>
+  </header>
+
+  <form class="search" id="searchForm">
+    <label for="q" class="hidden">Paper reference</label>
+    <input id="q" name="q" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Search by title, or paste a DOI / link / ISBN…">
+    <button id="goBtn" type="submit">Find paper</button>
+  </form>
+  <p class="hint">Paste a DOI (like <code>10.1038/s41586-020-2649-2</code>), a link from doi.org / arXiv / PubMed, an ISBN — or just type what you're looking for and pick from the results.</p>
+
+  <div class="examples" id="examples">
+    <span>Try:</span>
+    <button class="chip" type="button" data-q="10.48550/arXiv.1706.03762">“Attention Is All You Need” (arXiv)</button>
+    <button class="chip" type="button" data-q="attention is all you need">Search by title</button>
+    <button class="chip" type="button" data-q="crispr gene editing">Topic search</button>
+  </div>
+
+  <div class="status hidden" id="status" aria-live="polite">
+    <span class="spinner"></span><span id="statusText">Looking for your paper…</span>
+  </div>
+
+  <div class="notice hidden" id="notice"></div>
+
+  <div class="result hidden" id="result"></div>
+
+  <details class="recent" id="sourcesPanel">
+    <summary>Sources</summary>
+    <div class="body">
+      <div class="srcrow" style="border-top:none">
+        <span><span class="n">Open-access sources</span>
+          <span class="d">— Unpaywall, OpenAlex, arXiv, PubMed Central, DOAJ</span></span>
+        <span class="d">always on</span>
+      </div>
+      <div id="shadowList"></div>
+      <div id="sourcesNote"></div>
+    </div>
+  </details>
+
+  <details class="recent hidden" id="recentPanel">
+    <summary>Recent documents</summary>
+    <div class="body">
+      <div id="recentList"></div>
+      <div class="exports">
+        <span style="color:var(--muted)">Export all:</span>
+        <a href="/export?format=bibtex">BibTeX</a>
+        <a href="/export?format=ris">RIS</a>
+        <a href="/export?format=csv">CSV</a>
+        <a href="/export?format=jsonl">JSONL</a>
+        <a href="/export/reading-list?format=html" target="_blank" rel="noopener">Reading list ↗</a>
+      </div>
+    </div>
+  </details>
+
+  <footer>
+    Only <b>legitimate open-access sources</b> are searched (Unpaywall, OpenAlex, arXiv, PubMed Central, DOAJ).
+    Some publishers keep papers behind paywalls — for those, we'll point you to the publisher's page.
+    Developers: the underlying <a href="/docs">API documentation</a>.
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function parseQuery(raw) {
+  const v = raw.trim();
+  if (/^doi:\s*/i.test(v))  return { doi: v.replace(/^doi:\s*/i, "") };
+  if (/^10\.\d{4,9}\//i.test(v)) return { doi: v };
+  if (/^https?:\/\/(dx\.)?doi\.org\//i.test(v)) return { doi: v.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "") };
+  if (/^https?:\/\//i.test(v)) return { url: v };
+  if (/arxiv\.org\/(?:abs|pdf)\//i.test(v)) return { url: v };
+  const digits = v.replace(/[-\s]/g, "");
+  if (/^97[89]\d{10}$/.test(digits) || /^\d{9}[\dXx]$/.test(digits)) return { isbn: digits };
+  return { title: v };
+}
+
+function friendlyError(err) {
+  const e = (err || "").toLowerCase();
+  if (e.includes("recaptcha") || e.includes("proof-of-work"))
+    return "The source hosting this paper is blocking automated downloads right now. Try again in a little while, or use the publisher's page.";
+  if (e.includes("timeout") || e.includes("timed out"))
+    return "The search took too long. Please try again — it often works on a second attempt.";
+  if (e.includes("no source produced") || e.includes("not a pdf") || e.includes("playwright"))
+    return "No freely readable copy could be found. Many papers are only available behind a publisher's paywall — try the publisher's page or your library.";
+  if (e.includes("rate"))
+    return "The search services are busy at the moment. Please wait a few seconds and try again.";
+  return "Something went wrong while looking for this paper. Please try again.";
+}
+
+function setStatus(text) {
+  $("status").classList.remove("hidden");
+  $("statusText").textContent = text;
+}
+function clearOutput() {
+  ["status", "notice", "result"].forEach((id) => $(id).classList.add("hidden"));
+  $("result").innerHTML = "";
+}
+
+/* ---------- acquisition ---------- */
+
+async function acquire(body, elapsedLabel) {
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - started) / 1000);
+    setStatus((elapsedLabel || "Getting your paper") + "… checking open-access sources (up to 30s)… " + s + "s");
+  }, 1000);
+  try {
+    const resp = await fetch("/acquire/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data) throw new Error((data && data.error && data.error.message) || "HTTP " + resp.status);
+    return data;
+  } finally {
+    clearInterval(tick);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderDoc(doc) {
+  const ok = doc.status === "done" && doc.sha256;
+  $("status").classList.add("hidden");
+
+  const el = $("result");
+  const pill = ok ? "✓ PDF found" : "✕ No free copy found";
+  const pillCls = ok ? "ok" : "bad";
+  const authors = (doc.authors || []).join(", ");
+  const prov = ((doc.enriched || {}).enrich_providers) || [];
+  const bits = [];
+  if (prov.length) bits.push("Metadata found via: " + prov.join(", ") + ".");
+  if (doc.error) bits.push(friendlyError(doc.error));
+
+  el.innerHTML = `
+    <span class="pill ${pillCls}">${pill}</span>
+    <h2>${escapeHtml(doc.title || "(untitled paper)")}</h2>
+    ${authors || doc.year ? `<p class="meta"><b>${escapeHtml(authors)}</b>${doc.year ? " · " + doc.year : ""}</p>` : ""}
+    <div class="actions" id="rActions"></div>
+    ${bits.length ? `<p class="footnote">${escapeHtml(bits.join(" "))}</p>` : ""}`;
+
+  const actions = $("rActions");
+  if (ok) {
+    const dl = document.createElement("a");
+    dl.className = "primary";
+    dl.href = "/documents/" + doc.id + "/file";
+    dl.textContent = "⬇ Download PDF";
+    actions.appendChild(dl);
+  }
+  if (doc.doi) {
+    const pub = document.createElement("a");
+    pub.href = "https://doi.org/" + encodeURIComponent(doc.doi);
+    pub.target = "_blank";
+    pub.rel = "noopener";
+    pub.textContent = "View at publisher ↗";
+    actions.appendChild(pub);
+  }
+  el.classList.remove("hidden");
+  loadRecent();
+}
+
+/* ---------- search + picker ---------- */
+
+async function runSearch(q) {
+  setStatus("Searching…");
+  const resp = await fetch("/search?q=" + encodeURIComponent(q));
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok || !data) throw new Error((data && data.error && data.error.message) || "HTTP " + resp.status);
+  return data;
+}
+
+function renderHits(query, results) {
+  $("status").classList.add("hidden");
+  const el = $("result");
+  if (!results.length) {
+    showNotice("No papers matched “" + query + "”. Try fewer or different words — e.g. just the main title.");
+    return;
+  }
+  el.innerHTML = `
+    <span class="pill info">${results.length} result${results.length > 1 ? "s" : ""}</span>
+    <h2 style="font-size:17px;color:var(--muted);font-weight:500">Pick the paper you meant:</h2>
+    <div id="hitList"></div>`;
+  const list = $("hitList");
+  results.forEach((h) => {
+    const row = document.createElement("div");
+    row.className = "hit";
+    const meta = [
+      h.authors && h.authors.length ? escapeHtml(h.authors.slice(0, 3).join(", ") + (h.authors.length > 3 ? " et al." : "")) : "",
+      h.year || "",
+      h.container ? escapeHtml(h.container) : "",
+    ].filter(Boolean).join(" · ");
+    row.innerHTML = `
+      <div class="info">
+        <h3>${escapeHtml(h.title || "(untitled)")}</h3>
+        <div class="src">${meta}${meta ? " · " : ""}${(h.sources || []).join(", ")}
+          ${h.has_pdf ? ' · <span class="pdf">PDF likely available</span>' : ""}</div>
+      </div>`;
+    const btn = document.createElement("button");
+    btn.textContent = "Get PDF";
+    btn.addEventListener("click", async () => {
+      clearOutput();
+      $("goBtn").disabled = true;
+      try {
+        const body = h.doi ? { doi: h.doi }
+          : h.isbn ? { isbn: h.isbn }
+          : { title: h.title, authors: h.authors || [], year: h.year || undefined };
+        const doc = await acquire(body, "Getting “" + (h.title || "").slice(0, 40) + "”");
+        renderDoc(doc);
+      } catch (err) {
+        showNotice(friendlyError(String(err && err.message || err)));
+      } finally {
+        $("goBtn").disabled = false;
+      }
+    });
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+  el.classList.remove("hidden");
+}
+
+/* ---------- recent documents ---------- */
+
+async function loadRecent() {
+  try {
+    const resp = await fetch("/queue");
+    const q = await resp.json();
+    const items = (q.items || []).slice(0, 8);
+    const panel = $("recentPanel");
+    if (!q.total && !items.length) { panel.classList.add("hidden"); return; }
+    panel.classList.remove("hidden");
+    const list = $("recentList");
+    list.innerHTML = "";
+    items.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "doc";
+      const title = d.title || d.doi || "(untitled)";
+      const link = d.file_path ? ` <a href="/documents/${d.id}/file">PDF</a>` : "";
+      row.innerHTML = `<span class="t"><span class="dot ${d.status}"></span>${escapeHtml(title)}</span>${link}`;
+      list.appendChild(row);
+    });
+    if (!items.length) list.innerHTML = '<p class="meta">Nothing here yet.</p>';
+  } catch (_) { /* panel stays hidden */ }
+}
+
+function showNotice(text) {
+  $("notice").textContent = text;
+  $("notice").classList.remove("hidden");
+}
+
+/* ---------- sources panel (shadow libraries opt-in) ---------- */
+
+const SHADOW_LABELS = {
+  scihub: "Sci-Hub",
+  annas_archive: "Anna's Archive",
+  libgen: "Library Genesis",
+  zlibrary: "Z-Library",
+};
+const SHADOW_ACK_KEY = "dc.shadowAck";
+
+async function loadSources() {
+  const list = $("shadowList"), note = $("sourcesNote");
+  try {
+    const resp = await fetch("/sources");
+    const d = await resp.json();
+    list.innerHTML = "";
+    note.innerHTML = "";
+    if (!d.can_manage) {
+      list.innerHTML = "";
+      note.innerHTML = `<div class="locknote">🔒 Shadow libraries (Sci-Hub, Anna's Archive, LibGen,
+        Z-Library) are <b>not available on this public demo</b> — only legitimate open-access
+        sources are searched. Run your own instance
+        (<code>pip install -e .[serve]</code> then <code>documentcrawler serve</code>) to opt in.</div>`;
+      return;
+    }
+    for (const s of d.sources.filter(s => s.kind === "shadow")) {
+      const row = document.createElement("div");
+      row.className = "srcrow";
+      row.innerHTML = `
+        <span><span class="n">${SHADOW_LABELS[s.name] || s.name}</span>
+          <span class="d">— shadow library</span></span>
+        <span class="switch"><input type="checkbox" aria-label="Enable ${SHADOW_LABELS[s.name] || s.name}"
+          ${s.enabled ? "checked" : ""}><span class="track"></span></span>`;
+      const cb = row.querySelector("input");
+      cb.dataset.name = s.name;
+      cb.dataset.wasEnabled = s.enabled ? "1" : "";
+      cb.addEventListener("change", () => toggleSource(cb));
+      list.appendChild(row);
+    }
+    note.innerHTML = `<p class="srcnote">Toggles apply to search <b>and</b> downloads immediately, and are
+      saved to the server's config so the CLI and GUI see them too. Shadow sources are tried only
+      when no open-access copy exists.</p>`;
+  } catch (_) {
+    note.innerHTML = '<p class="srcnote">Could not load source settings.</p>';
+  }
+}
+
+async function toggleSource(cb) {
+  const name = cb.dataset.name;
+  const want = cb.checked;
+  if (want && !localStorage.getItem(SHADOW_ACK_KEY)) {
+    const ok = confirm(
+      SHADOW_LABELS[name] + " hosts content under disputed legal status in many jurisdictions.\n\n" +
+      "You are responsible for your use of this source, for complying with its terms and with the copyright laws applicable to you.\n\nEnable shadow libraries?");
+    if (!ok) { cb.checked = false; return; }
+    localStorage.setItem(SHADOW_ACK_KEY, "1");
+  }
+  try {
+    const resp = await fetch("/sources/" + name, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: want, acknowledged: true }),
+    });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => null);
+      alert("Could not update: " + ((e && e.error && e.error.message) || resp.status));
+      cb.checked = !want;
+      return;
+    }
+    cb.dataset.wasEnabled = want ? "1" : "";
+  } catch (_) {
+    alert("Network error while updating sources.");
+    cb.checked = !want;
+  }
+}
+
+/* ---------- wiring ---------- */
+
+$("searchForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) { $("q").focus(); return; }
+  clearOutput();
+  $("goBtn").disabled = true;
+  const parsed = parseQuery(q);
+  try {
+    if ("title" in parsed) {
+      setStatus("Searching…");
+      const data = await runSearch(q);
+      renderHits(q, data.results || []);
+    } else {
+      setStatus("Looking for your paper…");
+      const doc = await acquire(parsed);
+      renderDoc(doc);
+    }
+  } catch (err) {
+    $("status").classList.add("hidden");
+    showNotice(friendlyError(String(err && err.message || err)));
+  } finally {
+    $("goBtn").disabled = false;
+  }
+});
+
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    $("q").value = chip.dataset.q;
+    $("searchForm").requestSubmit();
+  });
+});
+
+loadRecent();
+loadSources();
+</script>
+</body>
+</html>

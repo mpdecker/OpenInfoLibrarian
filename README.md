@@ -111,14 +111,35 @@ directory, and tweak the filename template.
 
 ```bash
 pip install -e .[serve]
-documentcrawler serve --port 8099      # interactive docs at /docs
+documentcrawler serve --port 8099
 ```
+
+Opening the root URL in a **browser** gives a plain search form ("Document
+Finder"): paste a DOI / arXiv link / title, get the paper's details and a
+PDF download button, with friendly explanations when a paper isn't freely
+available. API clients hitting `/` still get the JSON service description.
 
 The server shares `config.toml` and the SQLite database with the CLI/GUI.
 With `[server].public_demo = true` it runs in demo mode: no background
 worker (`/acquire/sync` processes inline instead of `/acquire` queuing),
 and the `/db/*` mutation + webhook endpoints are disabled — suitable for
 public internet exposure.
+
+**Shadow libraries.** On a self-hosted server the web UI's *Sources* panel
+(or `GET/POST /sources`) toggles Sci-Hub, Anna's Archive, LibGen, and
+Z-Library at runtime — the first flip requires acknowledging the legal
+notice, the change is surgically persisted to `config.toml` (so the CLI
+and GUI see it too), and both `/search` and downloads pick it up on the
+next request. The public demo never exposes them.
+
+**IP rotation / masking** (self-hosted): `[fetcher.proxy]` routes
+shadow-library traffic through a proxy — a rotating pool
+(`http://user:pass@pool:8080`) or local Tor (`socks5h://127.0.0.1:9050`,
+needs `pip install httpx[socks]`). Shadow hosts are matched by known
+hostname fragments (extend with `shadow_hosts = [...]`); DNS-blocked
+mirrors come back to life because SOCKS resolves remotely, and the
+Playwright fallback honors the same proxy. Open-access APIs stay direct
+by default (`shadow_only = false` sends everything through it).
 
 A public demo is deployed at
 **https://documentcrawler.vercel.app** (open-access sources only,

@@ -8,6 +8,7 @@ for JS / Cloudflare-protected pages.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import random
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from tenacity import (
 )
 
 from documentcrawler.config import FetcherConfig
+from documentcrawler.fetcher.tor_rotate import tor_newnym
 from documentcrawler.fetcher.pdf_resolve import (
     is_probably_html,
     pdf_urls_from_html,
@@ -32,6 +34,28 @@ from documentcrawler.storage.writer import looks_like_pdf
 from documentcrawler.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+# Hostname fragments identifying shadow-library hosts. Used to decide
+# which requests route through [fetcher.proxy] when shadow_only is set —
+# DNS-blocked mirrors also get fixed this way, since SOCKS proxies
+# resolve hostnames remotely.
+_SHADOW_HOST_FRAGMENTS = (
+    "sci-hub", "sci.bban", "annas-archive", "libgen", "library.lol",
+    "z-lib", "z-library", "1lib", "zlibshare", "annas",
+)
+
+
+def is_shadow_url(url: str, extra_hosts: list[str] | None = None) -> bool:
+    """True if the URL points at a shadow-library host.
+
+    ``extra_hosts`` extends the built-in fragments (matched as hostname
+    substrings) from [fetcher.proxy].shadow_hosts.
+    """
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    fragments = _SHADOW_HOST_FRAGMENTS + tuple(h.lower() for h in extra_hosts or [])
+    return any(frag in host for frag in fragments)
 
 
 class FetchError(RuntimeError):
@@ -96,6 +120,9 @@ class Fetcher:
         self._timeout = httpx.Timeout(timeout_s, connect=min(15, timeout_s))
         self._max_retries = max_retries
         self._client: httpx.AsyncClient | None = None
+        self._proxy_clients: list[httpx.AsyncClient] = []
+        self._proxy_rr = itertools.count()
+        self._proxy_client_failed = False
         self._limiter = _RateLimiter(config)
         self._browser_pool = None
         self._unhealthy_until: dict[str, float] = {}
@@ -143,16 +170,75 @@ class Fetcher:
             )
         return self._client
 
+    async def _ensure_proxy_clients(self) -> list[httpx.AsyncClient]:
+        """Lazily build one client per configured proxy endpoint.
+
+        Returns [] when no proxy is configured or when a SOCKS endpoint
+        needs support that isn't installed (logged once, clearly).
+        """
+        proxy_cfg = getattr(self._config, "proxy", None)
+        endpoints = proxy_cfg.endpoints() if proxy_cfg else []
+        if not endpoints or self._proxy_client_failed:
+            return []
+        if not self._proxy_clients:
+            clients: list[httpx.AsyncClient] = []
+            for proxy_url in endpoints:
+                try:
+                    clients.append(httpx.AsyncClient(
+                        proxy=proxy_url,
+                        follow_redirects=True,
+                        timeout=self._timeout,
+                        headers={"Accept-Language": "en-US,en;q=0.9"},
+                    ))
+                except ImportError as e:
+                    self._proxy_client_failed = True
+                    log.warning(
+                        "[fetcher.proxy] endpoint %s needs SOCKS support: pip install "
+                        "httpx[socks] (or documentcrawler[serve]) — proxy disabled, "
+                        "requests will go direct (%s)",
+                        proxy_url, e,
+                    )
+                    for c in clients:
+                        await c.aclose()
+                    return []
+            self._proxy_clients = clients
+        return self._proxy_clients
+
+    async def _client_for(self, url: str) -> httpx.AsyncClient:
+        """Pick the client for a URL: round-robin across the proxy pool
+        for shadow hosts when [fetcher.proxy].shadow_only is set (default),
+        the pool for everything otherwise."""
+        proxy_cfg = getattr(self._config, "proxy", None)
+        if proxy_cfg and proxy_cfg.endpoints():
+            extra_hosts = getattr(proxy_cfg, "shadow_hosts", None) or []
+            direct_hosts = [h.lower() for h in (getattr(proxy_cfg, "direct_hosts", None) or [])]
+            host = (urlparse(url).hostname or "").lower()
+            wants_proxy = (not proxy_cfg.shadow_only) or is_shadow_url(url, extra_hosts)
+            if wants_proxy and host and not any(frag in host for frag in direct_hosts):
+                clients = await self._ensure_proxy_clients()
+                if clients:
+                    return clients[next(self._proxy_rr) % len(clients)]
+        return await self._ensure_client()
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        for c in self._proxy_clients:
+            await c.aclose()
+        self._proxy_clients = []
         if self._browser_pool is not None:
             await self._browser_pool.close()
             self._browser_pool = None
 
     def _ua(self) -> str:
         return random.choice(self._config.user_agents) if self._config.user_agents else "Mozilla/5.0"
+
+    def _proxy_url(self) -> str | None:
+        """Single proxy URL for the browser pool (first endpoint of a
+        pool — Chromium supports one proxy per context)."""
+        proxy_cfg = getattr(self._config, "proxy", None)
+        return proxy_cfg.endpoints()[0] if proxy_cfg and proxy_cfg.endpoints() else None
 
     @staticmethod
     def _host(url: str) -> str:
@@ -187,7 +273,7 @@ class Fetcher:
                           re-raising for retry.  Set to ``False`` for
                           callers that want to handle 429s themselves.
         """
-        client = await self._ensure_client()
+        client = await self._client_for(url)
         host = self._host(url)
         await self._limiter.acquire(host)
         merged_headers = {"User-Agent": self._ua()}
@@ -210,6 +296,17 @@ class Fetcher:
             retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
             reraise=True,
         ):
+            # Fresh Tor exit before each retry: if this request rides a
+            # Tor proxy with a control port configured, ask for new
+            # circuits so the retry gets a different IP (the programmatic
+            # "New Identity"). Best-effort; no-op otherwise.
+            if attempt.retry_state.attempt_number > 1 and client is not await self._ensure_client():
+                proxy_cfg = getattr(self._config, "proxy", None)
+                if proxy_cfg is not None and proxy_cfg.tor_control_port:
+                    tor_newnym(
+                        control_port=proxy_cfg.tor_control_port,
+                        cookie_path=proxy_cfg.tor_cookie_path,
+                    )
             with attempt:
                 resp = await client.request(
                     method,
@@ -306,7 +403,7 @@ class Fetcher:
                     "Playwright not installed. Install with `pip install documentcrawler[browser]` "
                     "and run `playwright install chromium`."
                 ) from e
-            self._browser_pool = BrowserPool(user_agent=self._ua())
+            self._browser_pool = BrowserPool(user_agent=self._ua(), proxy=self._proxy_url())
             await self._browser_pool.start()
         host = self._host(url)
         await self._limiter.acquire(host)
@@ -347,7 +444,7 @@ class Fetcher:
                 url=url,
             ) from e
         if self._browser_pool is None:
-            self._browser_pool = BrowserPool(user_agent=self._ua())
+            self._browser_pool = BrowserPool(user_agent=self._ua(), proxy=self._proxy_url())
             await self._browser_pool.start()
         host = self._host(url)
         await self._limiter.acquire(host)

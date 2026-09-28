@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -94,6 +94,11 @@ class WebhookRequest(BaseModel):
     secret: str | None = None
 
 
+class SourceToggleRequest(BaseModel):
+    enabled: bool
+    acknowledged: bool = False
+
+
 class WebhookResponse(BaseModel):
     id: int
     url: str
@@ -112,6 +117,8 @@ class ErrorResponse(BaseModel):
 
 
 GRACEFUL_SHUTDOWN_S = 30
+
+_UI_HTML_PATH = Path(__file__).parent / "static" / "index.html"
 
 
 def create_app(config_path: Path) -> FastAPI:
@@ -193,6 +200,15 @@ def create_app(config_path: Path) -> FastAPI:
     # worker running (see lifespan), no webhook could ever fire, so
     # accepting registrations would only be misleading and a spam surface.
     DEMO_DISABLED_PREFIXES = ("/webhooks",)
+    # Source catalogue for the runtime toggles: open-access download
+    # sources are legit everywhere; the shadow libraries are opt-in per
+    # deployment (and never available on public_demo instances, whose
+    # configs leave them unreachable regardless of toggles).
+    LEGIT_SOURCES = ["open_access", "arxiv", "pubmed", "doaj"]
+    SHADOW_SOURCES = ["scihub", "annas_archive", "libgen", "zlibrary"]
+    TOGGLEABLE_SOURCES = LEGIT_SOURCES + SHADOW_SOURCES
+
+    app.state.config_path = config_path
 
     @app.middleware("http")
     async def log_and_auth_requests(request: Request, call_next: Any) -> Any:
@@ -274,13 +290,22 @@ def create_app(config_path: Path) -> FastAPI:
     # --- endpoints -----------------------------------------------------------
 
     @app.get("/", tags=["Health"])
-    async def root() -> dict[str, Any]:
-        """Service landing: what this is and where the docs live."""
+    async def root(request: Request) -> Response:
+        """Service landing.
+
+        Browsers (Accept: text/html) get the human-friendly search UI;
+        API clients keep getting the JSON service description.
+        """
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept and _UI_HTML_PATH.is_file():
+            return FileResponse(_UI_HTML_PATH, media_type="text/html")
+
         info: dict[str, Any] = {
             "service": "DocumentCrawler Acquisition Server",
             "version": __version__,
             "documentation": "/docs",
             "openapi": "/openapi.json",
+            "web_interface": "/ (send Accept: text/html for the browser UI)",
             "endpoints": {
                 "health": "/health",
                 "acquire_sync": "/acquire/sync",
@@ -296,7 +321,7 @@ def create_app(config_path: Path) -> FastAPI:
                 "Database-maintenance endpoints under /db/* (except stats and audit-health) are disabled.",
                 "Storage is ephemeral serverless /tmp state — do not rely on /queue or /jobs persisting between calls.",
             ]
-        return info
+        return JSONResponse(content=info)
 
     @app.get("/health", response_model=HealthResponse, tags=["Health"])
     async def health() -> HealthResponse:
@@ -376,10 +401,18 @@ def create_app(config_path: Path) -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail="No DOI, title, ISBN, or URL provided")
 
-        timeout_s = timeout if timeout is not None else 25
-        if not (5 <= timeout_s <= 25):
-            raise HTTPException(status_code=400,
-                                detail="timeout must be between 5 and 25 seconds for /acquire/sync")
+        # The tight budget exists for serverless request limits; a
+        # self-hosted instance (which may have slow shadow-library mirrors
+        # enabled) can afford — and needs — a longer one.
+        is_demo = app.state.config.server.public_demo
+        default_timeout_s = 25 if is_demo else 90
+        max_timeout_s = 25 if is_demo else 300
+        timeout_s = timeout if timeout is not None else default_timeout_s
+        if not (5 <= timeout_s <= max_timeout_s):
+            raise HTTPException(
+                status_code=400,
+                detail=f"timeout must be between 5 and {max_timeout_s} seconds for /acquire/sync",
+            )
 
         db: Database = app.state.db
         try:
@@ -391,6 +424,13 @@ def create_app(config_path: Path) -> FastAPI:
         if doc is None:
             raise HTTPException(status_code=500, detail="Failed to create document")
 
+        # A previously failed row dedupes back here; reset it so this
+        # request actually retries (the pipeline's atomic claim only
+        # accepts pending rows).
+        if doc.status == DocStatus.FAILED:
+            db.set_status(doc_id, DocStatus.PENDING, error=None)
+            doc = db.get(doc_id) or doc
+
         cfg: Config = app.state.config
         cancel_event = asyncio.Event()
         pipeline = Pipeline(
@@ -400,7 +440,10 @@ def create_app(config_path: Path) -> FastAPI:
             await asyncio.wait_for(pipeline.run([doc]), timeout=timeout_s + 5)
         except TimeoutError:
             cancel_event.set()
-            db.set_status(doc.id, DocStatus.FAILED, error="acquire/sync: request timed out")
+            current = db.get(doc_id)
+            if current is None or current.status != DocStatus.DONE:
+                db.set_status(doc.id, DocStatus.FAILED,
+                              error="acquire/sync: request timed out")
 
         result = db.get(doc_id)
         if result is None:
@@ -470,6 +513,31 @@ def create_app(config_path: Path) -> FastAPI:
             error=doc.error,
             enriched=doc.enriched,
         )
+
+    @app.get("/documents/{doc_id}/file", tags=["Acquisition"])
+    async def get_document_file(doc_id: int) -> FileResponse:
+        """Stream the downloaded file for a document (used by the web UI)."""
+        db: Database = app.state.db
+        doc = db.get(doc_id)
+        if doc is None or not doc.file_path:
+            raise HTTPException(status_code=404, detail=f"No downloaded file for document #{doc_id}")
+
+        path = Path(doc.file_path)
+        try:
+            # Stored paths come from our own pipeline, but stay defensive:
+            # never serve anything that escaped the configured download dir.
+            within_root = path.resolve().is_relative_to(cfg.general.download_dir.resolve())
+        except OSError:
+            within_root = False
+        if not within_root:
+            raise HTTPException(status_code=404, detail="File is outside the download directory")
+
+        if not path.is_file():
+            raise HTTPException(
+                status_code=410,
+                detail="The file is no longer available (demo storage is temporary) — find the paper again",
+            )
+        return FileResponse(path, media_type="application/pdf", filename=path.name)
 
     @app.get("/queue", response_model=QueueSummary, tags=["Queue"])
     async def get_queue() -> QueueSummary:
@@ -627,12 +695,163 @@ def create_app(config_path: Path) -> FastAPI:
         count = db.clean_metadata()
         return {"ok": True, "cleaned_records": count}
 
+    @app.get("/sources", tags=["Sources"])
+    async def list_sources() -> dict[str, Any]:
+        """List configurable document sources (open-access + shadow libraries)."""
+        cfg_dyn: Config = app.state.config
+        return {
+            "can_manage": not cfg_dyn.server.public_demo,
+            "public_demo": cfg_dyn.server.public_demo,
+            "sources": [
+                {
+                    "name": name,
+                    "kind": "shadow" if name in SHADOW_SOURCES else "open_access",
+                    "enabled": cfg_dyn.source(name).enabled,
+                }
+                for name in TOGGLEABLE_SOURCES
+            ],
+        }
+
+    @app.post("/sources/{name}", tags=["Sources"])
+    async def set_source(name: str, body: SourceToggleRequest) -> dict[str, Any]:
+        """Enable or disable a document source at runtime.
+
+        Persisted surgically to the server's config.toml (sections like
+        [server] are preserved), so the CLI and GUI see the same state and
+        the change survives restarts. Blocked on public_demo instances —
+        their configs never expose shadow sources at all.
+        """
+        cfg_dyn: Config = app.state.config
+        if cfg_dyn.server.public_demo:
+            raise HTTPException(
+                status_code=403,
+                detail="Source management is disabled on the public demo instance.",
+            )
+        if name not in TOGGLEABLE_SOURCES:
+            raise HTTPException(status_code=404, detail=f"Unknown source {name!r}")
+        if body.enabled and name in SHADOW_SOURCES and not body.acknowledged:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Enabling a shadow library requires acknowledged=true — these "
+                    "sources host content under disputed legal status and you are "
+                    "responsible for complying with the laws applicable to you."
+                ),
+            )
+
+        from documentcrawler.config import set_source_enabled_in_file
+
+        try:
+            set_source_enabled_in_file(Path(app.state.config_path), name, body.enabled)
+            app.state.config = load_config(Path(app.state.config_path))
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not update config: {e}") from e
+
+        cfg_dyn = app.state.config
+        return {
+            "name": name,
+            "enabled": cfg_dyn.source(name).enabled,
+            "order": cfg_dyn.sources_order,
+        }
+
     @app.get("/search/pdf-content", tags=["Search"])
     async def search_pdf_content(q: str, limit: int = 50) -> dict[str, Any]:
         """Full-text search inside downloaded PDF document body contents."""
         db: Database = app.state.db
         docs = db.search_pdf_content(q, limit=limit)
         return {"query": q, "count": len(docs), "documents": [d.model_dump(mode="json") for d in docs]}
+
+    @app.get("/search", tags=["Search"])
+    async def search_metadata(q: str, limit: int = 8) -> dict[str, Any]:
+        """Multi-source metadata search: results are merged across sources,
+        deduplicated (DOI > ISBN > normalized title), and ranked with
+        PDF-available hits first. Read-only — safe on public instances."""
+        q = (q or "").strip()
+        if not q:
+            raise HTTPException(status_code=400, detail="q is required")
+        limit = max(1, min(limit, 25))
+
+        from documentcrawler.fetcher import Fetcher
+        from documentcrawler.searcher.aggregate import MultiSearcher, SearchQuery
+
+        cfg_dyn: Config = app.state.config
+        options: dict[str, dict[str, Any]] = {}
+        cr_mailto = (cfg_dyn.metadata.get("crossref") or {}).get("mailto")
+        oa_mailto = (cfg_dyn.metadata.get("openalex") or {}).get("mailto")
+        if cr_mailto:
+            options["crossref"] = {"mailto": cr_mailto}
+        if oa_mailto:
+            options["openalex"] = {"mailto": oa_mailto}
+
+        # Base metadata engines, plus any shadow-library searchers the
+        # deployment has enabled (config-driven; the public demo config
+        # enables none, so they are unreachable there).
+        sources = ["crossref", "openalex", "arxiv", "openlibrary"]
+        sources += [s for s in SHADOW_SOURCES if cfg_dyn.source(s).enabled]
+
+        async with Fetcher(
+            cfg_dyn.fetcher,
+            timeout_s=cfg_dyn.general.request_timeout_s,
+            max_retries=1,
+        ) as fetcher:
+            result = await MultiSearcher(fetcher).search(
+                SearchQuery(
+                    text=q,
+                    kind="auto",
+                    sources=sources,
+                    limit_per_source=6,
+                    overall_timeout_s=12.0,
+                    options_per_source=options,
+                )
+            )
+
+        # Rank for a human picker by *query relevance*: searcher scores are
+        # source-relative (an engine's top hit self-scores ~1.0 even for a
+        # weak match), so an exact title match from one source must not
+        # lose to loosely-related hits from another. Title similarity is
+        # the primary key; source score and PDF availability break ties.
+        def _norm_text(t: str) -> str:
+            return " ".join("".join(c.lower() if c.isalnum() else " " for c in t).split())
+
+        def _relevance(h: Any) -> tuple[float, float, bool]:
+            if h.title:
+                try:
+                    from rapidfuzz import fuzz
+
+                    sim = fuzz.token_set_ratio(_norm_text(q), _norm_text(h.title)) / 100.0
+                except ImportError:  # pragma: no cover
+                    sim = 0.0
+            else:
+                sim = 0.0
+            return (round(sim, 2), float(h.score), h.has_pdf)
+
+        ranked = sorted(result.merged, key=_relevance, reverse=True)
+        hits = ranked[:limit]
+        return {
+            "query": q,
+            "count": len(hits),
+            "sources_used": sources,
+            "results": [
+                {
+                    "title": h.title,
+                    "authors": h.authors[:6],
+                    "year": h.year,
+                    "doi": h.doi,
+                    "isbn": h.isbn,
+                    "container": h.container,
+                    "url": h.url,
+                    "pdf_url": h.pdf_url,
+                    "has_pdf": h.has_pdf,
+                    "sources": sorted(h.extra.get("contributors") or []),
+                    "score": round(float(h.score), 3),
+                    "relevance": _relevance(h)[0],
+                }
+                for h in hits
+            ],
+            "source_errors": {
+                r.source: r.error for r in result.runs if r.error
+            },
+        }
 
     @app.post("/db/rerank", tags=["Database"])
     async def db_rerank() -> dict[str, Any]:

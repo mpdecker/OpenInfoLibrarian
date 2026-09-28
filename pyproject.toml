@@ -42,24 +42,24 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.44"]
-serve = ["fastapi>=0.110", "uvicorn>=0.29"]
+serve = ["fastapi>=0.110", "uvicorn>=0.29", "httpx[socks]>=0.27"]
 gui = ["documentcrawler[browser]"]
 full = ["documentcrawler[browser,serve]"]
-
-# Mirror of the `serve` extra for uv-based installs (Vercel's Python runtime
-# runs `uv sync --no-dev`, which never activates extras but does install
-# groups listed here).
-[dependency-groups]
-serve = ["fastapi>=0.110", "uvicorn>=0.29"]
-
-[tool.uv]
-default-groups = ["serve"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
     "ruff>=0.4",
 ]
+
+# Mirror of the `serve` extra for uv-based installs (Vercel's Python runtime
+# runs `uv sync --no-dev`, which never activates extras but does install
+# groups listed here).
+[dependency-groups]
+serve = ["fastapi>=0.110", "uvicorn>=0.29", "httpx[socks]>=0.27"]
+
+[tool.uv]
+default-groups = ["serve"]
 
 [project.scripts]
 documentcrawler = "documentcrawler.cli:_main"

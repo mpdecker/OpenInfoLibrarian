@@ -78,6 +78,15 @@ class Pipeline:
         self.progress_cb = progress_cb
         self.cancel_event = cancel_event
         self.per_doc_timeout_s = per_doc_timeout_s
+        # Per-source candidate-search budget (see _process_one). Generous
+        # enough for multi-mirror probing on a healthy network, tight
+        # enough that a handful of dead mirrors can't starve a document.
+        # Proxied traffic (Tor / rotating pools) pays several extra seconds
+        # per probe, so scale the budget up when a proxy is configured.
+        budget = getattr(self.config.general, "source_search_timeout_s", 25.0)
+        if getattr(self.config.fetcher, "proxy", None):
+            budget = max(budget, budget * 2.5)
+        self._source_search_budget_s = float(budget)
         self.dry_run = dry_run
         self.circuit_breaker = circuit_breaker or CircuitBreaker()
 
@@ -219,7 +228,11 @@ class Pipeline:
         if doc.status == DocStatus.DONE and doc.file_path:
             return True, None
 
-        self.db.set_status(doc.id, DocStatus.IN_PROGRESS)
+        # Atomic claim: a background worker and an /acquire/sync can both
+        # see the same pending row — only one may process it.
+        if not self.db.claim_document(doc.id):
+            log.debug("doc #%d claimed elsewhere; skipping", doc.id)
+            return True, None
 
         query = DocumentQuery(
             doi=doc.doi, title=doc.title, authors=doc.authors, year=doc.year,
@@ -267,7 +280,22 @@ class Pipeline:
                                     options=cfg.options)
                 candidates: list[Candidate] = []
                 try:
-                    candidates = await source.search(ctx)
+                    # Bound each source's candidate search: mirror probing
+                    # can burn minutes on unreachable mirrors, starving the
+                    # sources after it (and the document's whole budget)
+                    # with nothing visible in the attempt log.
+                    candidates = await asyncio.wait_for(
+                        source.search(ctx), timeout=self._source_search_budget_s
+                    )
+                except TimeoutError:
+                    self.circuit_breaker.record_failure(source.name)
+                    self._log_failure(
+                        doc.id, source.name, None,
+                        f"search: timed out after {self._source_search_budget_s:.0f}s",
+                        error_kind=ErrorKind.TRANSIENT.value,
+                    )
+                    last_error = f"{source.name}: search timed out"
+                    continue
                 except Exception as e:
                     self.circuit_breaker.record_failure(source.name, is_rate_limit="429" in str(e))
                     log.debug("source %s search error: %s", source.name, e)
@@ -390,16 +418,22 @@ class Pipeline:
             try:
                 return await asyncio.wait_for(_inner(), timeout=self.per_doc_timeout_s)
             except TimeoutError:
-                self.db.set_status(
-                    doc.id, DocStatus.FAILED,
-                    error=f"pipeline: timeout after {self.per_doc_timeout_s}s"
-                )
+                # Never clobber a terminal state another runner already
+                # recorded while this budget was expiring.
+                current = self.db.get(doc.id)
+                if current is None or current.status != DocStatus.DONE:
+                    self.db.set_status(
+                        doc.id, DocStatus.FAILED,
+                        error=f"pipeline: timeout after {self.per_doc_timeout_s}s"
+                    )
                 self._log_failure(doc.id, "pipeline", None,
                                   f"timeout after {self.per_doc_timeout_s:.0f}s",
                                   error_kind=ErrorKind.TRANSIENT.value)
                 return False, None
             except asyncio.CancelledError:
-                self.db.set_status(doc.id, DocStatus.FAILED, error="pipeline: cancelled")
+                current = self.db.get(doc.id)
+                if current is None or current.status != DocStatus.DONE:
+                    self.db.set_status(doc.id, DocStatus.FAILED, error="pipeline: cancelled")
                 raise
         else:
             try:

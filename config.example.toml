@@ -56,6 +56,26 @@ list = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
 ]
 
+# Route shadow-library traffic through a proxy: IP rotation / masking and
+# a fix for DNS-blocked mirrors (SOCKS resolves hostnames remotely).
+# Typical values:
+#   url = "socks5h://127.0.0.1:9050"            # local Tor (needs pip install httpx[socks])
+#   url = "http://user:pass@pool.example:8080"  # rotating-residential pool
+# With local Tor, also set tor_control_port (Tor needs `ControlPort 9051`
+# + `CookieAuthentication 1` in its torrc): on any failed request the
+# fetcher signals SIGNAL NEWNYM so the retry leaves from a fresh exit IP —
+# the programmatic "New Identity", free of charge.
+# Multiple endpoints via `pool` are rotated client-side, round-robin per
+# request (e.g. sticky sessions of a residential pool):
+#   pool = ["http://user:pass@pool.example:8080?session=a",
+#           "http://user:pass@pool.example:8080?session=b"]
+# shadow_only = true keeps open-access APIs on their fast direct paths
+# (and their polite-pool IPs); set false to send everything via the proxy.
+# [fetcher.proxy]
+# url = "socks5h://127.0.0.1:9050"
+# shadow_only = true
+# shadow_hosts = ["my-private-mirror.example"]
+
 [metadata.unpaywall]
 # Unpaywall requires a contact email. https://unpaywall.org/products/api
 email = "you@example.com"

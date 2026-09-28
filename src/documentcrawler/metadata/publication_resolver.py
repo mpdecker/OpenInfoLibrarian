@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from typing import Any, Protocol
 
 
@@ -180,6 +179,22 @@ class PublicationResolver:
         if best_score < 25.0:
             return None
 
+        # A title query must actually agree with the matched title: fuzzy
+        # engines happily return *something* for any text ("asdf qwerty"
+        # matches a random paper on searcher score alone), and adopting
+        # that poisons the document's metadata and downloads the wrong PDF.
+        authoritative = (
+            (query.doi and best.doi and _norm(query.doi) == _norm(best.doi))
+            or (query.isbn and best.isbn and _norm(query.isbn) == _norm(best.isbn))
+        )
+        if (
+            not authoritative
+            and query.title
+            and best.title
+            and _text_similarity(query.title, best.title) < 0.45
+        ):
+            return None
+
         return ResolvedPublication(
             source=best.source,
             score=best_score,
@@ -224,11 +239,23 @@ def _text_similarity(a: str, b: str) -> float:
     b_norm = _norm(b)
     if not a_norm or not b_norm:
         return 0.0
-    ratio = SequenceMatcher(None, a_norm, b_norm).ratio()
+    try:
+        from rapidfuzz import fuzz
+
+        # token_set_ratio ignores surrounding words, so a pasted citation
+        # ("Vaswani, A., et al. (2017). Attention Is All You Need.") still
+        # scores high against the bare title — and typos survive too.
+        token_set = fuzz.token_set_ratio(a_norm, b_norm) / 100.0
+        ratio = fuzz.ratio(a_norm, b_norm) / 100.0
+    except ImportError:  # pragma: no cover - difflib fallback
+        from difflib import SequenceMatcher
+
+        token_set = 0.0
+        ratio = SequenceMatcher(None, a_norm, b_norm).ratio()
     a_tokens = set(a_norm.split())
     b_tokens = set(b_norm.split())
     overlap = len(a_tokens & b_tokens) / max(1, len(a_tokens | b_tokens))
-    return max(ratio, overlap)
+    return max(ratio, token_set, overlap)
 
 
 def _best_author_similarity(author: str, candidates: list[str]) -> float:

@@ -409,3 +409,172 @@ def test_host_circuit_breaker():
 
     fetcher.mark_host_success(url)
     assert fetcher.is_host_healthy(url) is True
+
+
+def test_is_shadow_url_detection():
+    from documentcrawler.fetcher.http import is_shadow_url
+
+    assert is_shadow_url("https://libgen.li/index.php?req=x")
+    assert is_shadow_url("https://sci.bban.top/pdf/10.1/x")
+    assert is_shadow_url("https://annas-archive.gl/search?q=x")
+    assert is_shadow_url("https://z-lib.fm/book/123")
+    assert is_shadow_url("https://evil.example.com/", extra_hosts=["evil.example"])
+    assert not is_shadow_url("https://api.openalex.org/works")
+    assert not is_shadow_url("https://arxiv.org/pdf/1706.03762")
+
+
+def test_proxy_config_coercion(tmp_path):
+    from documentcrawler.config import load_config
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndb_path = "crawler.db"\n\n'
+        "[fetcher.proxy]\n"
+        'url = "socks5h://127.0.0.1:9050"\n'
+        "shadow_only = false\n"
+        'shadow_hosts = ["mymirror.example"]\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.fetcher.proxy is not None
+    assert cfg.fetcher.proxy.url == "socks5h://127.0.0.1:9050"
+    assert cfg.fetcher.proxy.shadow_only is False
+    assert cfg.fetcher.proxy.shadow_hosts == ["mymirror.example"]
+
+
+async def test_proxy_routing_shadow_vs_direct():
+    """Shadow URLs go through the proxy (closed port => connect error to
+    the proxy itself); open-access URLs stay direct and succeed."""
+    import httpx
+
+    from documentcrawler.config import FetcherConfig, ProxyConfig
+    from documentcrawler.fetcher.http import Fetcher
+
+    cfg = FetcherConfig()
+    cfg.proxy = ProxyConfig(url="http://127.0.0.1:9", shadow_only=True)
+
+    async with Fetcher(cfg, timeout_s=10, max_retries=1) as f:
+        # direct path unaffected
+        r = await f.get("https://example.com/", max_retries=1)
+        assert r.status == 200
+
+        # shadow URL routed via the dead proxy: the error mentions the proxy
+        try:
+            await f.get("https://libgen.li/index.php", max_retries=1)
+            raise AssertionError("expected failure through dead proxy")
+        except Exception as e:
+            assert "127.0.0.1:9" in str(e) or isinstance(e, httpx.ConnectError)
+
+
+async def test_proxy_pool_round_robin_rotation():
+    """A two-endpoint pool alternates clients per request; non-shadow
+    URLs stay direct."""
+    from documentcrawler.config import FetcherConfig, ProxyConfig
+    from documentcrawler.fetcher.http import Fetcher
+
+    cfg = FetcherConfig()
+    cfg.proxy = ProxyConfig(pool=["http://127.0.0.1:9", "http://127.0.0.1:9"],
+                            shadow_only=True)
+    async with Fetcher(cfg, timeout_s=8, max_retries=1) as f:
+        clients = await f._ensure_proxy_clients()
+        assert len(clients) == 2
+        picks = [await f._client_for("https://libgen.li/x") for _ in range(4)]
+        assert picks[0] is clients[0] and picks[1] is clients[1]
+        assert picks[2] is clients[0] and picks[3] is clients[1]
+        # direct for non-shadow
+        assert await f._client_for("https://api.openalex.org/x") is not clients[0]
+
+
+def test_proxy_pool_config_coercion(tmp_path):
+    from documentcrawler.config import load_config
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[general]\ndb_path = "crawler.db"\n\n'
+        "[fetcher.proxy]\n"
+        "pool = [\n"
+        '  "http://u:p@pool.example:8080?session=a",\n'
+        '  "http://u:p@pool.example:8080?session=b",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.fetcher.proxy is not None
+    assert cfg.fetcher.proxy.endpoints() == [
+        "http://u:p@pool.example:8080?session=a",
+        "http://u:p@pool.example:8080?session=b",
+    ]
+    # url-only config still works through endpoints()
+    cfg_path.write_text(
+        '[fetcher.proxy]\nurl = "socks5h://127.0.0.1:9050"\n', encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.fetcher.proxy.endpoints() == ["socks5h://127.0.0.1:9050"]
+
+
+def test_tor_newnym_speaks_control_protocol(tmp_path):
+    """A fake control server asserts the AUTHENTICATE/SIGNAL exchange."""
+    import socket
+    import threading
+    from documentcrawler.fetcher.tor_rotate import tor_newnym
+
+    cookie = tmp_path / "control_auth_cookie"
+    cookie.write_bytes(bytes.fromhex("aabbcc"))
+
+    received = []
+    port_holder = {}
+    ready = threading.Event()
+
+    def fake_tor():
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port_holder["port"] = srv.getsockname()[1]
+        ready.set()
+        conn, _ = srv.accept()
+        f = conn.makefile("rbw", buffering=0)
+        # Tor is silent until the client asks for PROTOCOLINFO
+        assert f.readline() == b"PROTOCOLINFO 1\r\n"
+        # realistic PROTOCOLINFO banner advertising the cookie file
+        f.write(
+            (
+                '250-PROTOCOLINFO 1\r\n'
+                '250-AUTH METHODS=COOKIE COOKIEFILE="%s"\r\n'
+                '250 OK\r\n' % cookie
+            ).encode()
+        )
+        received.append(f.readline())
+        f.write(b"250 OK\r\n")
+        received.append(f.readline())
+        f.write(b"250 OK\r\n")
+        conn.close()
+        srv.close()
+
+    t = threading.Thread(target=fake_tor, daemon=True)
+    t.start()
+    assert ready.wait(timeout=5)
+
+    ok = tor_newnym(control_port=port_holder["port"], cookie_path=str(cookie))
+    assert ok is True
+    assert received[0].startswith(b"AUTHENTICATE aabbcc")
+    assert received[1] == b"SIGNAL NEWNYM\r\n"
+
+
+def test_tor_newnym_down_daemon_returns_false():
+    from documentcrawler.fetcher.tor_rotate import tor_newnym
+
+    # nothing listens on port 1
+    assert tor_newnym(control_port=1, timeout_s=0.5) is False
+
+
+def test_tor_control_config_coercion(tmp_path):
+    from documentcrawler.config import load_config
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[fetcher.proxy]\nurl = "socks5h://127.0.0.1:9050"\ntor_control_port = 9051\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.fetcher.proxy.tor_control_port == 9051
+    assert cfg.fetcher.proxy.tor_cookie_path is None

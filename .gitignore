@@ -17,3 +17,4 @@ downloads/
 .DS_Store
 .kilo/
 .vercel
+local_server.log

@@ -1,0 +1,27 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Verification - Sci-Hub</title>
+<script type="text/javascript">(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})(window,document,"clarity","script","weyoajdjqa");</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<style>body{font-family:Arial,sans-serif;text-align:center;padding-top:100px;background:#f5f5f5;}
+.container{background:white;padding:40px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);display:inline-block;}
+p{color:#666;}#verify-status{font-size:12px;color:#999;margin-top:16px;}</style></head><body><div class="container">
+<h1 style="font-size:22px;margin:0 0 16px;">Verification</h1>
+<p>Please complete the check to continue.</p>
+<div class="cf-turnstile" data-sitekey="0x4AAAAAADXMHnrF-Ni1NbSL" data-callback="onVerified" data-error-callback="onVerifyError" data-expired-callback="onVerifyExpired"></div>
+<p id="verify-status">Waiting for verification...</p></div>
+<script>
+function setStatus(msg){var el=document.getElementById('verify-status');if(el){el.textContent=msg;}}
+function onVerifyError(code){setStatus('Verification failed' + (code ? ' (' + code + ')' : '') + '. Please refresh and try again.');}
+function onVerifyExpired(){setStatus('Verification expired. Please try again.');}
+function onVerified(token){
+  setStatus('Checking verification...');
+  fetch('/api/verify-turnstile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(data && data.success){
+        document.cookie='scihub_verified=1;path=/;max-age=1800;SameSite=Lax';
+        window.location.href='/10.1093/nar';
+      }else{setStatus('Verification rejected. Please refresh and try again.');}
+    })
+    .catch(function(){setStatus('Unable to verify. Please refresh and try again.');});
+  }
+</script></body></html>

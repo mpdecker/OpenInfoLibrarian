@@ -96,3 +96,23 @@ def test_cancel_event_checked_between_sources(tmp_path):
         db.close()
 
     asyncio.run(_run())
+
+
+def test_source_search_budget_scales_with_proxy(tmp_path):
+    from documentcrawler.config import FetcherConfig, ProxyConfig, Config
+    from documentcrawler.pipeline import Pipeline
+
+    cfg = Config()
+    cfg.general.db_path = tmp_path / "t.db"
+    assert Pipeline(cfg, db=None)._source_search_budget_s == 25.0  # type: ignore[arg-type]
+
+    cfg2 = Config()
+    cfg2.general.db_path = tmp_path / "t.db"
+    cfg2.fetcher.proxy = ProxyConfig(url="socks5h://127.0.0.1:9050")
+    assert Pipeline(cfg2, db=None)._source_search_budget_s == 62.5  # type: ignore[arg-type]
+
+    cfg3 = Config()
+    cfg3.general.db_path = tmp_path / "t.db"
+    cfg3.general.source_search_timeout_s = 40
+    cfg3.fetcher.proxy = ProxyConfig(url="socks5h://127.0.0.1:9050")
+    assert Pipeline(cfg3, db=None)._source_search_budget_s == 100.0  # type: ignore[arg-type]

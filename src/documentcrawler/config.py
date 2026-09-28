@@ -64,13 +64,58 @@ class GeneralConfig:
     max_retries: int = 3
     min_pdf_bytes: int = 20480
     pipeline_timeout_s: int = 300
+    # Per-source candidate-search budget. Auto-scaled up when a fetcher
+    # proxy is configured (Tor / rotating pools add several seconds per
+    # mirror probe).
+    source_search_timeout_s: float = 25.0
     log_level: str = "INFO"
+
+
+@dataclass
+class ProxyConfig:
+    """Route requests through a proxy — IP rotation / masking and a fix
+    for DNS-blocked mirrors (SOCKS resolves hostnames remotely).
+
+    Typical values: a rotating-residential pool
+    (``http://user:pass@pool.example:8080`` — the pool rotates IPs
+    server-side) or local Tor (``socks5h://127.0.0.1:9050``; needs
+    ``httpx[socks]``). Multiple endpoints in ``pool`` are rotated
+    client-side, round-robin per request.
+    """
+
+    url: str | None = None
+    # Several endpoints (e.g. several pool sessions): round-robin per
+    # request. Takes precedence over url when both are set.
+    pool: list[str] = field(default_factory=list)
+    # Tor control port for on-failure circuit rotation (fresh exit IPs).
+    # Set when the proxy is a local Tor daemon with
+    # `ControlPort 9051` + `CookieAuthentication 1` in its torrc;
+    # the fetcher signals SIGNAL NEWNYM before each retry through Tor.
+    tor_control_port: int | None = None
+    # Explicit control-cookie path (default: Tor advertises it itself).
+    tor_cookie_path: str | None = None
+    # Hostname fragments always routed DIRECT even when they match the
+    # shadow matcher — for sources whose mirrors work fine from your IP
+    # (Tor's latency would only cost time there).
+    direct_hosts: list[str] = field(default_factory=list)
+    # Route only shadow-library hosts through the proxy (default) so
+    # open-access APIs keep their fast direct paths and polite-pool IPs.
+    shadow_only: bool = True
+    # Extra hostname fragments treated as shadow hosts (substring match).
+    shadow_hosts: list[str] = field(default_factory=list)
+
+    def endpoints(self) -> list[str]:
+        """Proxy URLs in rotation order (pool first, then the single url)."""
+        if self.pool:
+            return [u for u in self.pool if u]
+        return [self.url] if self.url else []
 
 
 @dataclass
 class FetcherConfig:
     rate_limits: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_RATE_LIMITS))
     user_agents: list[str] = field(default_factory=lambda: list(_DEFAULT_USER_AGENTS))
+    proxy: ProxyConfig | None = None
 
 
 @dataclass
@@ -191,9 +236,12 @@ def _coerce_general(raw: dict[str, Any]) -> GeneralConfig:
     ):
         if key in raw:
             setattr(cfg, key, raw[key])
-    for key in ("workers", "request_timeout_s", "max_retries", "min_pdf_bytes", "pipeline_timeout_s"):
+    for key in ("workers", "request_timeout_s", "max_retries", "min_pdf_bytes",
+                "pipeline_timeout_s"):
         if key in raw:
             setattr(cfg, key, int(raw[key]))
+    if "source_search_timeout_s" in raw:
+        cfg.source_search_timeout_s = float(raw["source_search_timeout_s"])
     return cfg
 
 
@@ -211,6 +259,17 @@ def _coerce_fetcher(raw: dict[str, Any]) -> FetcherConfig:
         cfg.user_agents = list(ua["list"])
     elif isinstance(ua, list):
         cfg.user_agents = list(ua)
+    proxy_raw = raw.get("proxy")
+    if isinstance(proxy_raw, dict) and (proxy_raw.get("url") or proxy_raw.get("pool")):
+        cfg.proxy = ProxyConfig(
+            url=str(proxy_raw["url"]) if proxy_raw.get("url") else None,
+            pool=[str(u) for u in proxy_raw.get("pool", [])],
+            tor_control_port=int(proxy_raw["tor_control_port"]) if proxy_raw.get("tor_control_port") else None,
+            tor_cookie_path=str(proxy_raw["tor_cookie_path"]) if proxy_raw.get("tor_cookie_path") else None,
+            shadow_only=bool(proxy_raw.get("shadow_only", True)),
+            shadow_hosts=[str(h) for h in proxy_raw.get("shadow_hosts", [])],
+            direct_hosts=[str(h) for h in proxy_raw.get("direct_hosts", [])],
+        )
     return cfg
 
 
@@ -268,6 +327,63 @@ def load_config(path: Path | None = None) -> Config:
     for w in warnings:
         log.warning("Config: %s", w)
     return config
+
+
+def set_source_enabled_in_file(path: Path, name: str, enabled: bool) -> None:
+    """Flip `[sources.<name>].enabled` (adding the section and the order
+    entry as needed) with a *surgical* text edit.
+
+    The full-file emitter in config_writer drops sections it does not know
+    (e.g. [server]), so runtime toggles must not rewrite the whole file.
+    The result is re-parsed before being written back; a malformed outcome
+    raises instead of corrupting the config.
+    """
+    import re
+
+    path = Path(path)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+
+    # --- 1. make sure the name is in [sources].order -----------------------
+    order_match = re.search(r"(?ms)^order\s*=\s*\[.*?\]", text)
+    current_order: list[str] = []
+    if order_match:
+        arr = order_match.group(0)[order_match.group(0).index("["):]
+        current_order = [str(v) for v in tomllib.loads("x = " + arr)["x"]]
+    if name not in current_order:
+        new_order = current_order + [name]
+        one_line = "order = [" + ", ".join(f'"{n}"' for n in new_order) + "]"
+        if order_match:
+            text = text[:order_match.start()] + one_line + text[order_match.end():]
+        else:
+            text = text.rstrip("\n") + f"\n\n[sources]\n{one_line}\n"
+
+    # --- 2. add or update the [sources.<name>] section ---------------------
+    section_re = re.compile(rf"(?ms)^\[sources\.{re.escape(name)}\]\s*$")
+    m = section_re.search(text)
+    flag = "true" if enabled else "false"
+    if m:
+        # section span: until the next header or EOF
+        span_end = re.search(r"(?m)^\[", text[m.end():])
+        body_end = m.end() + (span_end.start() if span_end else len(text[m.end():]))
+        body = text[m.end():body_end]
+        if re.search(r"(?m)^enabled\s*=", body):
+            body = re.sub(r"(?m)^enabled\s*=\s*\S+.*$", f"enabled = {flag}", body, count=1)
+        else:
+            body = f"\nenabled = {flag}" + (body if body.startswith("\n") or not body else "\n" + body)
+        text = text[:m.end()] + body + text[body_end:]
+    else:
+        text = text.rstrip("\n") + f"\n\n[sources.{name}]\nenabled = {flag}\n"
+
+    # --- 3. validate before writing -----------------------------------------
+    parsed = tomllib.loads(text)
+    section = (parsed.get("sources", {}) or {})
+    if name not in [str(v) for v in section.get("order", [])]:
+        raise ConfigError(f"failed to add {name!r} to sources order")
+    if (section.get(name, {}) or {}).get("enabled") is not enabled:
+        raise ConfigError(f"failed to set [sources.{name}].enabled = {flag}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def write_default_config(target: Path = DEFAULT_CONFIG_PATH) -> Path:
