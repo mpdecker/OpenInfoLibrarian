@@ -510,3 +510,71 @@ def test_proxy_pool_config_coercion(tmp_path):
     )
     cfg = load_config(cfg_path)
     assert cfg.fetcher.proxy.endpoints() == ["socks5h://127.0.0.1:9050"]
+
+
+def test_tor_newnym_speaks_control_protocol(tmp_path):
+    """A fake control server asserts the AUTHENTICATE/SIGNAL exchange."""
+    import socket
+    import threading
+    from documentcrawler.fetcher.tor_rotate import tor_newnym
+
+    cookie = tmp_path / "control_auth_cookie"
+    cookie.write_bytes(bytes.fromhex("aabbcc"))
+
+    received = []
+    port_holder = {}
+    ready = threading.Event()
+
+    def fake_tor():
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port_holder["port"] = srv.getsockname()[1]
+        ready.set()
+        conn, _ = srv.accept()
+        f = conn.makefile("rbw", buffering=0)
+        # Tor is silent until the client asks for PROTOCOLINFO
+        assert f.readline() == b"PROTOCOLINFO 1\r\n"
+        # realistic PROTOCOLINFO banner advertising the cookie file
+        f.write(
+            (
+                '250-PROTOCOLINFO 1\r\n'
+                '250-AUTH METHODS=COOKIE COOKIEFILE="%s"\r\n'
+                '250 OK\r\n' % cookie
+            ).encode()
+        )
+        received.append(f.readline())
+        f.write(b"250 OK\r\n")
+        received.append(f.readline())
+        f.write(b"250 OK\r\n")
+        conn.close()
+        srv.close()
+
+    t = threading.Thread(target=fake_tor, daemon=True)
+    t.start()
+    assert ready.wait(timeout=5)
+
+    ok = tor_newnym(control_port=port_holder["port"], cookie_path=str(cookie))
+    assert ok is True
+    assert received[0].startswith(b"AUTHENTICATE aabbcc")
+    assert received[1] == b"SIGNAL NEWNYM\r\n"
+
+
+def test_tor_newnym_down_daemon_returns_false():
+    from documentcrawler.fetcher.tor_rotate import tor_newnym
+
+    # nothing listens on port 1
+    assert tor_newnym(control_port=1, timeout_s=0.5) is False
+
+
+def test_tor_control_config_coercion(tmp_path):
+    from documentcrawler.config import load_config
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[fetcher.proxy]\nurl = "socks5h://127.0.0.1:9050"\ntor_control_port = 9051\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.fetcher.proxy.tor_control_port == 9051
+    assert cfg.fetcher.proxy.tor_cookie_path is None

@@ -61,6 +61,10 @@ list = [
 # Typical values:
 #   url = "socks5h://127.0.0.1:9050"            # local Tor (needs pip install httpx[socks])
 #   url = "http://user:pass@pool.example:8080"  # rotating-residential pool
+# With local Tor, also set tor_control_port (Tor needs `ControlPort 9051`
+# + `CookieAuthentication 1` in its torrc): on any failed request the
+# fetcher signals SIGNAL NEWNYM so the retry leaves from a fresh exit IP —
+# the programmatic "New Identity", free of charge.
 # Multiple endpoints via `pool` are rotated client-side, round-robin per
 # request (e.g. sticky sessions of a residential pool):
 #   pool = ["http://user:pass@pool.example:8080?session=a",

@@ -87,6 +87,17 @@ class ProxyConfig:
     # Several endpoints (e.g. several pool sessions): round-robin per
     # request. Takes precedence over url when both are set.
     pool: list[str] = field(default_factory=list)
+    # Tor control port for on-failure circuit rotation (fresh exit IPs).
+    # Set when the proxy is a local Tor daemon with
+    # `ControlPort 9051` + `CookieAuthentication 1` in its torrc;
+    # the fetcher signals SIGNAL NEWNYM before each retry through Tor.
+    tor_control_port: int | None = None
+    # Explicit control-cookie path (default: Tor advertises it itself).
+    tor_cookie_path: str | None = None
+    # Hostname fragments always routed DIRECT even when they match the
+    # shadow matcher — for sources whose mirrors work fine from your IP
+    # (Tor's latency would only cost time there).
+    direct_hosts: list[str] = field(default_factory=list)
     # Route only shadow-library hosts through the proxy (default) so
     # open-access APIs keep their fast direct paths and polite-pool IPs.
     shadow_only: bool = True
@@ -253,8 +264,11 @@ def _coerce_fetcher(raw: dict[str, Any]) -> FetcherConfig:
         cfg.proxy = ProxyConfig(
             url=str(proxy_raw["url"]) if proxy_raw.get("url") else None,
             pool=[str(u) for u in proxy_raw.get("pool", [])],
+            tor_control_port=int(proxy_raw["tor_control_port"]) if proxy_raw.get("tor_control_port") else None,
+            tor_cookie_path=str(proxy_raw["tor_cookie_path"]) if proxy_raw.get("tor_cookie_path") else None,
             shadow_only=bool(proxy_raw.get("shadow_only", True)),
             shadow_hosts=[str(h) for h in proxy_raw.get("shadow_hosts", [])],
+            direct_hosts=[str(h) for h in proxy_raw.get("direct_hosts", [])],
         )
     return cfg
 

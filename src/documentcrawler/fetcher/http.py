@@ -24,6 +24,7 @@ from tenacity import (
 )
 
 from documentcrawler.config import FetcherConfig
+from documentcrawler.fetcher.tor_rotate import tor_newnym
 from documentcrawler.fetcher.pdf_resolve import (
     is_probably_html,
     pdf_urls_from_html,
@@ -210,7 +211,10 @@ class Fetcher:
         proxy_cfg = getattr(self._config, "proxy", None)
         if proxy_cfg and proxy_cfg.endpoints():
             extra_hosts = getattr(proxy_cfg, "shadow_hosts", None) or []
-            if (not proxy_cfg.shadow_only) or is_shadow_url(url, extra_hosts):
+            direct_hosts = [h.lower() for h in (getattr(proxy_cfg, "direct_hosts", None) or [])]
+            host = (urlparse(url).hostname or "").lower()
+            wants_proxy = (not proxy_cfg.shadow_only) or is_shadow_url(url, extra_hosts)
+            if wants_proxy and host and not any(frag in host for frag in direct_hosts):
                 clients = await self._ensure_proxy_clients()
                 if clients:
                     return clients[next(self._proxy_rr) % len(clients)]
@@ -292,6 +296,17 @@ class Fetcher:
             retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
             reraise=True,
         ):
+            # Fresh Tor exit before each retry: if this request rides a
+            # Tor proxy with a control port configured, ask for new
+            # circuits so the retry gets a different IP (the programmatic
+            # "New Identity"). Best-effort; no-op otherwise.
+            if attempt.retry_state.attempt_number > 1 and client is not await self._ensure_client():
+                proxy_cfg = getattr(self._config, "proxy", None)
+                if proxy_cfg is not None and proxy_cfg.tor_control_port:
+                    tor_newnym(
+                        control_port=proxy_cfg.tor_control_port,
+                        cookie_path=proxy_cfg.tor_cookie_path,
+                    )
             with attempt:
                 resp = await client.request(
                     method,
