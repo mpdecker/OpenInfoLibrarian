@@ -8,6 +8,7 @@ for JS / Cloudflare-protected pages.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import random
 import time
 from dataclasses import dataclass
@@ -118,7 +119,8 @@ class Fetcher:
         self._timeout = httpx.Timeout(timeout_s, connect=min(15, timeout_s))
         self._max_retries = max_retries
         self._client: httpx.AsyncClient | None = None
-        self._proxy_client: httpx.AsyncClient | None = None
+        self._proxy_clients: list[httpx.AsyncClient] = []
+        self._proxy_rr = itertools.count()
         self._proxy_client_failed = False
         self._limiter = _RateLimiter(config)
         self._browser_pool = None
@@ -167,57 +169,60 @@ class Fetcher:
             )
         return self._client
 
-    async def _ensure_proxy_client(self) -> httpx.AsyncClient | None:
-        """Lazily build the proxied client from [fetcher.proxy].
+    async def _ensure_proxy_clients(self) -> list[httpx.AsyncClient]:
+        """Lazily build one client per configured proxy endpoint.
 
-        Returns None when no proxy is configured or when the proxy URL
-        needs SOCKS support that isn't installed (logged once, clearly).
+        Returns [] when no proxy is configured or when a SOCKS endpoint
+        needs support that isn't installed (logged once, clearly).
         """
         proxy_cfg = getattr(self._config, "proxy", None)
-        proxy_url = getattr(proxy_cfg, "url", None) if proxy_cfg else None
-        if not proxy_url or self._proxy_client_failed:
-            return None
-        if self._proxy_client is None:
-            kwargs: dict[str, Any] = {
-                "follow_redirects": True,
-                "timeout": self._timeout,
-                "headers": {"Accept-Language": "en-US,en;q=0.9"},
-            }
-            try:
-                self._proxy_client = httpx.AsyncClient(proxy=proxy_url, **kwargs)
-            except ImportError as e:
-                self._proxy_client_failed = True
-                log.warning(
-                    "[fetcher.proxy] url %s needs SOCKS support: pip install "
-                    "httpx[socks] (or documentcrawler[serve]) — proxy disabled, "
-                    "requests will go direct (%s)",
-                    proxy_url, e,
-                )
-                return None
-        return self._proxy_client
+        endpoints = proxy_cfg.endpoints() if proxy_cfg else []
+        if not endpoints or self._proxy_client_failed:
+            return []
+        if not self._proxy_clients:
+            clients: list[httpx.AsyncClient] = []
+            for proxy_url in endpoints:
+                try:
+                    clients.append(httpx.AsyncClient(
+                        proxy=proxy_url,
+                        follow_redirects=True,
+                        timeout=self._timeout,
+                        headers={"Accept-Language": "en-US,en;q=0.9"},
+                    ))
+                except ImportError as e:
+                    self._proxy_client_failed = True
+                    log.warning(
+                        "[fetcher.proxy] endpoint %s needs SOCKS support: pip install "
+                        "httpx[socks] (or documentcrawler[serve]) — proxy disabled, "
+                        "requests will go direct (%s)",
+                        proxy_url, e,
+                    )
+                    for c in clients:
+                        await c.aclose()
+                    return []
+            self._proxy_clients = clients
+        return self._proxy_clients
 
     async def _client_for(self, url: str) -> httpx.AsyncClient:
-        """Pick the client for a URL: proxied for shadow hosts when
-        [fetcher.proxy].shadow_only is set (default), proxied for
-        everything otherwise."""
+        """Pick the client for a URL: round-robin across the proxy pool
+        for shadow hosts when [fetcher.proxy].shadow_only is set (default),
+        the pool for everything otherwise."""
         proxy_cfg = getattr(self._config, "proxy", None)
-        proxy_url = getattr(proxy_cfg, "url", None) if proxy_cfg else None
-        if proxy_url:
-            shadow_only = getattr(proxy_cfg, "shadow_only", True)
+        if proxy_cfg and proxy_cfg.endpoints():
             extra_hosts = getattr(proxy_cfg, "shadow_hosts", None) or []
-            if (not shadow_only) or is_shadow_url(url, extra_hosts):
-                proxied = await self._ensure_proxy_client()
-                if proxied is not None:
-                    return proxied
+            if (not proxy_cfg.shadow_only) or is_shadow_url(url, extra_hosts):
+                clients = await self._ensure_proxy_clients()
+                if clients:
+                    return clients[next(self._proxy_rr) % len(clients)]
         return await self._ensure_client()
 
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-        if self._proxy_client is not None:
-            await self._proxy_client.aclose()
-            self._proxy_client = None
+        for c in self._proxy_clients:
+            await c.aclose()
+        self._proxy_clients = []
         if self._browser_pool is not None:
             await self._browser_pool.close()
             self._browser_pool = None
@@ -226,8 +231,10 @@ class Fetcher:
         return random.choice(self._config.user_agents) if self._config.user_agents else "Mozilla/5.0"
 
     def _proxy_url(self) -> str | None:
+        """Single proxy URL for the browser pool (first endpoint of a
+        pool — Chromium supports one proxy per context)."""
         proxy_cfg = getattr(self._config, "proxy", None)
-        return getattr(proxy_cfg, "url", None) if proxy_cfg else None
+        return proxy_cfg.endpoints()[0] if proxy_cfg and proxy_cfg.endpoints() else None
 
     @staticmethod
     def _host(url: str) -> str:

@@ -77,16 +77,27 @@ class ProxyConfig:
     for DNS-blocked mirrors (SOCKS resolves hostnames remotely).
 
     Typical values: a rotating-residential pool
-    (``http://user:pass@pool.example:8080``) or local Tor
-    (``socks5h://127.0.0.1:9050``; needs ``httpx[socks]``).
+    (``http://user:pass@pool.example:8080`` — the pool rotates IPs
+    server-side) or local Tor (``socks5h://127.0.0.1:9050``; needs
+    ``httpx[socks]``). Multiple endpoints in ``pool`` are rotated
+    client-side, round-robin per request.
     """
 
     url: str | None = None
+    # Several endpoints (e.g. several pool sessions): round-robin per
+    # request. Takes precedence over url when both are set.
+    pool: list[str] = field(default_factory=list)
     # Route only shadow-library hosts through the proxy (default) so
     # open-access APIs keep their fast direct paths and polite-pool IPs.
     shadow_only: bool = True
     # Extra hostname fragments treated as shadow hosts (substring match).
     shadow_hosts: list[str] = field(default_factory=list)
+
+    def endpoints(self) -> list[str]:
+        """Proxy URLs in rotation order (pool first, then the single url)."""
+        if self.pool:
+            return [u for u in self.pool if u]
+        return [self.url] if self.url else []
 
 
 @dataclass
@@ -238,9 +249,10 @@ def _coerce_fetcher(raw: dict[str, Any]) -> FetcherConfig:
     elif isinstance(ua, list):
         cfg.user_agents = list(ua)
     proxy_raw = raw.get("proxy")
-    if isinstance(proxy_raw, dict) and proxy_raw.get("url"):
+    if isinstance(proxy_raw, dict) and (proxy_raw.get("url") or proxy_raw.get("pool")):
         cfg.proxy = ProxyConfig(
-            url=str(proxy_raw["url"]),
+            url=str(proxy_raw["url"]) if proxy_raw.get("url") else None,
+            pool=[str(u) for u in proxy_raw.get("pool", [])],
             shadow_only=bool(proxy_raw.get("shadow_only", True)),
             shadow_hosts=[str(h) for h in proxy_raw.get("shadow_hosts", [])],
         )

@@ -61,6 +61,10 @@ list = [
 # Typical values:
 #   url = "socks5h://127.0.0.1:9050"            # local Tor (needs pip install httpx[socks])
 #   url = "http://user:pass@pool.example:8080"  # rotating-residential pool
+# Multiple endpoints via `pool` are rotated client-side, round-robin per
+# request (e.g. sticky sessions of a residential pool):
+#   pool = ["http://user:pass@pool.example:8080?session=a",
+#           "http://user:pass@pool.example:8080?session=b"]
 # shadow_only = true keeps open-access APIs on their fast direct paths
 # (and their polite-pool IPs); set false to send everything via the proxy.
 # [fetcher.proxy]
